@@ -99,9 +99,8 @@
   1. 在代码中加入严格的 `embedder` 元数据校验，若切换 Embedding 引擎，强制要求 `--rebuild` 重建向量库，防止返回语义错误的垃圾结果。
      ![重建向量库成功](17-ollama-rebuild-success.png?raw=true)
   2. 设计 `try-except` 降级机制。当智谱 API 返回 401 鉴权错误或超时时，自动捕获异常并切换至本地 Ollama 3B 模型。
-  3. 实测在纯 CPU 环境下，本地模型推理耗时 48.7s，虽然较慢，但完美保证了断网环境下的系统可用性。
-
-     ![Ollama降级成功](18-ollama-fallback-success.png?raw=true)
+  3. 实测在纯 CPU 环境下，本地模型推理耗时 71.1s，虽然较慢，但完美保证了断网环境下的系统可用性。
+     ![Ollama降级成功](18-rag-fallback-ollama.png?raw=true)
 ## 🚀 核心收获
 1. 掌握了基于 Trace（轨迹）定位 AI 工具调用失败原因的方法。
 2. 体验并理解了本地沙箱隔离、文件系统观察策略（`FS_NOT_OBSERVED`）对 Agent 安全的重要性。
