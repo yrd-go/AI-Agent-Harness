@@ -184,6 +184,15 @@ graph TD
   3. **设计了防死循环止损机制**：加入 `retry_count` 计数器，超过 2 次未通过（如知识库缺失的“视频生成”问题），状态机触发 `give_up` 安全退出。
   4. 实测 3 组用例，完整覆盖“一次通过”、“打回后通过”与“重试耗尽安全退出”的工程边界，断言结果全部符合预期。
   ![多智能体协作与防死循环](29-multi-agent-loop.png?raw=true)
+
+### 16. Function Calling 与工具封装（LangChain）
+* **现象**：大模型无法直接操作外部数据库，需要标准化的工具调用机制来实现“大脑指挥手脚”。
+* **解决**：
+  1. 基于 LangChain 的 `@tool` 装饰器，将底层 MongoDB 查询脚本封装成 `query_student_info` 工具。
+  2. **工具永不抛异常**：查不到、连不上都返回结构化的 JSON 字符串给模型作为“观察结果”，防止 Python Traceback 炸掉整个 Agent。
+  3. Agent 能够根据自然语言自动抽取参数（如 `{"student_id": 3}`），发起原生 Tool Calling。
+  4. 终端日志完整展示了 `HumanMessage -> AIMessage(决策) -> ToolMessage(执行) -> AIMessage(回答)` 的 ReAct 闭环。
+  ![Function Calling 实践](30-function-calling-demo.png?raw=true)
      
 ## 🚀 核心收获
 1. 掌握了基于 Trace（轨迹）定位 AI 工具调用失败原因的方法。
