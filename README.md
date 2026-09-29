@@ -175,6 +175,15 @@ graph TD
    * **解决**：拼接好的 Prompt 被交给智谱 glm-4-flash 生成回答（实测耗时 20.1 秒）。这证明了在我的架构中，“谁查资料（本地 Ollama）”和“谁写报告（云端智谱）”可以独立解耦与动态调度，兼顾了本地检索的隐私安全与云端生成的智商优势。
      ![Ollama检索与智谱生成](27-ollama-retrieval-zhipu-generation.png?raw=true)
      ![上下文注入与Prompt拼接](28-rag-show-prompt-context.png?raw=true)
+
+### 15. 多智能体协作与 Agent Loop 防死循环实践（LangGraph）
+* **现象**：普通的 RAG 是一次性线性检索，缺乏自我反思和重试能力。企业级 Agent 必须具备“规划-执行-审查-重试”的循环，但必须严格防止死循环。
+* **解决**：
+  1. 基于 `langgraph` 的 `StateGraph` 构建了两个协作 Agent：`Retriever`（检索）与 `Reviewer`（审查）。
+  2. 通过 **条件边（Conditional Edge）** 实现打回重试：Reviewer 认为资料不达标时，会将 `feedback` 回传给 Retriever 深挖邻居文档。
+  3. **设计了防死循环止损机制**：加入 `retry_count` 计数器，超过 2 次未通过（如知识库缺失的“视频生成”问题），状态机触发 `give_up` 安全退出。
+  4. 实测 3 组用例，完整覆盖“一次通过”、“打回后通过”与“重试耗尽安全退出”的工程边界，断言结果全部符合预期。
+  ![多智能体协作与防死循环](29-multi-agent-loop.png?raw=true)
      
 ## 🚀 核心收获
 1. 掌握了基于 Trace（轨迹）定位 AI 工具调用失败原因的方法。
