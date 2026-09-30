@@ -214,6 +214,26 @@ graph TD
   ![MCP 协议探针 - 工具调用](32-mcp-probe-tools-call.png?raw=true)
   ![MCP 大模型调度](33-mcp-weather-demo.png?raw=true)
   ![MCP 可视化工具失败排查](34-mcp-inspector-failed.png?raw=true)
+
+### 18. RAG 进阶优化：Query Rewrite 与 混合检索实战
+
+针对基础向量检索在口语化提问下召回率低的问题，我实现了查询改写（Query Rewrite）与混合检索（Hybrid Search），并通过对照实验验证了优化效果。
+
+*   **默认优化链路（Query Rewrite + Hybrid Search）**：
+    调用 `glm-4-flash` 将“我的VPN坏了”改写为“VPN 连接故障”，提取关键词，并执行双路召回（改写词 + 原问题）。最终得分 `0.7*向量 + 0.3*关键词`。实测 Top-1 精准命中了 VPN 相关文档，检索结果高度相关。
+    ![查询改写与混合检索](35-rag-query-rewrite-hybrid-search.png?raw=true)
+    ![混合检索后的Context与回答](36-rag-context-after-hybrid-search.png?raw=true)
+
+*   **对照组A（纯向量检索，`--no-rerank`）**：
+    关闭了改写和关键词重排。实测发现，向量模型认为“VPN坏了”与“DNS解析失败”语义相似，将错误文档排到了首位，召回质量明显下降。
+    ![纯向量检索对照组](37-rag-baseline-no-rerank.png?raw=true)
+
+*   **对照组B（仅本地关键词加分，`--no-rewrite`）**：
+    关闭了云端大模型改写，只依靠本地分词提取关键词“VPN”，并赋予 1.0 权重。结果证明，即使没有云端改写，精准的关键词加分机制依然能把正确文档顶到 Top-1，作为降级方案完全可用。
+    ![本地关键词加分对照组](38-rag-no-rewrite-local-keyword.png?raw=true)
+
+*   **防幻觉验证**：
+    在知识库确实未收录完整解决方案时，系统严格遵守了 Prompt 约束，直接回复“知识库中未收录该信息，建议联系 IT 服务台”，杜绝了模型凭直觉瞎编答案的幻觉风险。
      
 ## 🚀 核心收获
 1. 掌握了基于 Trace（轨迹）定位 AI 工具调用失败原因的方法。
