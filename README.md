@@ -193,6 +193,28 @@ graph TD
   3. Agent 能够根据自然语言自动抽取参数（如 `{"student_id": 3}`），发起原生 Tool Calling。
   4. 终端日志完整展示了 `HumanMessage -> AIMessage(决策) -> ToolMessage(执行) -> AIMessage(回答)` 的 ReAct 闭环。
   ![Function Calling 实践](30-function-calling-demo.png?raw=true)
+
+### 17. MCP (Model Context Protocol) 跨进程工具调用实践
+* **现象**：普通的 Function Calling 只能调用本进程内的 Python 函数。如果想复用外部工具（如 IDE、Claude Desktop、其他语言写的服务），就需要标准化的协议。但在实际落地 stdio 模式时遇到了两个大坑：
+  1. 直接运行 `python mcp_weather_server.py` 终端会“卡住”，没有任何输出。
+  2. 使用官方推荐的 `mcp dev` 启动可视化面板时，报错 `Failed`，右侧控制台出现乱码。
+* **解决**：
+  1. **理解 stdio 传输的底层机制**：MCP Server 启动后，它并非“卡死”，而是死盯着 `stdin` 等待客户端发送 JSON-RPC 报文。直接运行会挂起是正确的行为，按 `Ctrl+C` 退出即可。
+  2. **放弃不可用的可视化工具，改用裸协议探针**：因为 `mcp dev` 在 Windows 下依赖 `uv` 包管理器导致环境水土不服，我退回到命令行，编写了 `mcp_protocol_probe.py`。通过它，我直接打印了 `initialize`、`tools/list`、`tools/call` 三个核心阶段的原始 JSON-RPC 流转，成功定位到了协议层通信正常的结论。
+  3. **严格规范日志输出**：踩过“卡住”的坑后，我严格约束自己：在 stdio 传输模式下，**`stdout` 就是协议线，严禁使用 `print()`**，所有服务端日志必须通过 `logging` 输出到 `stderr`，否则会污染协议流导致客户端直接崩溃。
+  4. **完成 MCP 集成**：最终通过 LangChain 的 `MCPAdapter` 成功连接本地 Server，实现了智谱大模型自动提取参数、跨进程调用天气工具，并输出最终回答。
+
+* **核心文件**：
+  * `mcp_weather_server.py`：MCP Server，使用 stdio 传输，提供模拟天气查询工具，全程 `logging` 到 `stderr`。
+  * `mcp_weather_client.py`：LangChain 客户端，使用 `MCPAdapter` 拉取工具，并让大模型自动调用。
+  * `mcp_protocol_probe.py`：裸协议探针，不依赖大模型，直接查看底层 JSON-RPC 报文。
+
+* **本地验证**：
+  使用 `mcp_protocol_probe.py` 验证了协议层，又用 `mcp_weather_client.py` 验证了大模型调用，最终成功输出“北京：晴，25度（北风 3 级，湿度 40%）”。
+  ![MCP 协议探针](31-mcp-protocol-probe.png?raw=true)
+  ![MCP 协议探针](32-mcp-protocol-probe.png?raw=true)
+  ![MCP 大模型调度](33-mcp-weather-demo.png?raw=true)
+  ![MCP 可视化工具失败排查](34-mcp-inspector-failed.png?raw=true)
      
 ## 🚀 核心收获
 1. 掌握了基于 Trace（轨迹）定位 AI 工具调用失败原因的方法。
