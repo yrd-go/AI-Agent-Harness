@@ -236,17 +236,20 @@ graph TD
     在知识库确实未收录完整解决方案时，系统严格遵守了 Prompt 约束，直接回复“知识库中未收录该信息，建议联系 IT 服务台”，杜绝了模型凭直觉瞎编答案的幻觉风险。
 
 ## 19.🧭 统一 Web 控制台（Agent Operations Console）
-为了方便展示与交互，我基于 Streamlit 构建了一个统一的 Web 控制台，通过 `subprocess` 跨进程调度以下四个核心模块。控制台支持动态调节超时、模型引擎与检索参数，并统一使用 UTF-8 捕获子进程输出。
-### 控制台运行实况
-![统一控制台主界面](39-web-console-rag.png?raw=true)
-
-1. **RAG 知识库问答**：支持查询改写、混合检索、防幻觉验证，全链路打分可视化。
- ![RAG 混合检索](40-web-console-rag-hybrid-search.png?raw=true)   
-2. **多智能体协作演示**：完整展示 LangGraph 状态图的 `retry_count` 打回重试与防死循环安全退出机制。
- ![多智能体状态流转](41-web-console-multi-agent-loop.png?raw=true)  
-3. **多模型路由**：自然语言指令自动路由至本地脚本、免费翻译 API 或 DeepSeek 大模型。
- ![多模型路由](42-web-console-router-translate.png?raw=true)  
-4. **MCP 协议探针**：可视化展示 MCP 客户端的 `initialize` / `tools/list` / `tools/call` 底层 JSON-RPC 报文。
+为了方便展示与交互，我基于 Streamlit 构建了一个统一的 Web 控制台，通过 subprocess 跨进程调度以下四个核心模块。控制台支持动态调节超时、模型引擎与检索参数，并统一使用 UTF-8 捕获子进程输出。
+1.RAG 知识库问答：支持查询改写、混合检索、防幻觉验证，全链路打分可视化。
+2.多智能体协作演示：完整展示 LangGraph 状态图的 retry_count 打回重试与防死循环安全退出机制。
+3.多模型路由：自然语言指令自动路由至本地脚本、免费翻译 API 或 DeepSeek 大模型。
+4.MCP 协议探针：可视化展示 MCP 客户端的 initialize / tools/list / tools/call 底层 JSON-RPC 报文。
+控制台运行实况
+ ![统一控制台主界面](39-web-console-rag.png?raw=true)
+① RAG 知识库问答：输入“我的账号不行了”，系统自动改写为“账号无法登录”，并通过混合检索（向量 0.7 + 关键词 0.3）精准召回相关文档。
+  ![RAG 混合检索](40-web-console-rag-hybrid-search.png?raw=true)
+ ② 多智能体协作演示：Retriever 与 Reviewer 协作，展示 retry_count 从 0 到 2 的重试与 give_up 安全退出机制，最终断言全部符合预期。 
+    ![多智能体状态流转](41-web-console-multi-agent-loop.png?raw=true)
+③ 多模型路由：输入“翻译多模型 为俄语”，自动路由到免费翻译 API，成功返回俄语结果 Мультимодель перевода。
+   ![多模型路由](42-web-console-router-translate.png?raw=true)  
+ ④ MCP 协议探针：点击按钮，直接在网页上投射出 initialize 握手与 tools/call 调用的原始 JSON 报文（广州天气）。  
  ![MCP协议探针](43-web-console-mcp-probe.png?raw=true)
 
 ## 🚀 核心收获
@@ -254,13 +257,16 @@ graph TD
 2. 体验并理解了本地沙箱隔离、文件系统观察策略（`FS_NOT_OBSERVED`）对 Agent 安全的重要性。
 3. 掌握了“AI 生成 + 本地 IDE 验证”的混合工作流，实现了生成与执行的安全解耦。
 4. 具备了对 AI 生成代码进行工程审查（防 SQL 注入、资源释放、异常捕获）的实战能力。
+5. 掌握 RAG 检索与生成解耦架构，能够应对向量空间冲突、API 限流及各种极端网络环境下的容灾降级。
 
 ## 💻 技术栈
 * Python (AI 辅助生成与调试)
 * Node.js (内置模块开发)
-* 大模型 API (DeepSeek / GLM-4-Flash)
+* 大模型 API (DeepSeek / GLM-4-Flash / Ollama)
+* LangChain / Chroma 向量数据库 / MongoDB
 * **容器化交付**：提供基于 `python:3.11-slim` 的 `Dockerfile` 与 `.dockerignore`。引入依赖分层缓存优化构建速度，并预留了环境变量注入（`MONGO_URI`）入口，支持 Docker 环境一键部署。
   
 ## 📈 后续规划
 - [ ] 支持自动捕获不同语言（Node.js、Python）的报错堆栈。
 - [ ] 实现多模型路由：简单报错用轻量模型，复杂错误路由给强模型降本增效。
+- [ ] 优化本地 Ollama 的并发处理能力，探索量化模型（如 4-bit）以降低内存占用。
