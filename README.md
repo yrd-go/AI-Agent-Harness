@@ -235,22 +235,30 @@ graph TD
 *   **防幻觉验证**：
     在知识库确实未收录完整解决方案时，系统严格遵守了 Prompt 约束，直接回复“知识库中未收录该信息，建议联系 IT 服务台”，杜绝了模型凭直觉瞎编答案的幻觉风险。
 
-## 19.🧭 统一 Web 控制台（Agent Operations Console）
-为了方便展示与交互，我基于 Streamlit 构建了一个统一的 Web 控制台，通过 subprocess 跨进程调度以下四个核心模块。控制台支持动态调节超时、模型引擎与检索参数，并统一使用 UTF-8 捕获子进程输出。
-1.RAG 知识库问答：支持查询改写、混合检索、防幻觉验证，全链路打分可视化。
-2.多智能体协作演示：完整展示 LangGraph 状态图的 retry_count 打回重试与防死循环安全退出机制。
-3.多模型路由：自然语言指令自动路由至本地脚本、免费翻译 API 或 DeepSeek 大模型。
-4.MCP 协议探针：可视化展示 MCP 客户端的 initialize / tools/list / tools/call 底层 JSON-RPC 报文。
-控制台运行实况
- ![统一控制台主界面](39-web-console-rag.png?raw=true)
-① RAG 知识库问答：输入“我的账号不行了”，系统自动改写为“账号无法登录”，并通过混合检索（向量 0.7 + 关键词 0.3）精准召回相关文档。
+## 19. 🧭 统一 Web 控制台（Agent Operations Console）
+
+为了方便展示与交互，我基于 Streamlit 构建了一个统一的 Web 控制台，通过 `subprocess` 跨进程调度以下**五个核心模块**。控制台支持动态调节超时、模型引擎与检索参数，并统一使用 UTF-8 捕获子进程输出。
+
+1. **RAG 知识库问答**：支持查询改写、混合检索、防幻觉验证，全链路打分可视化。
+2. **多智能体协作演示**：完整展示 LangGraph 状态图的 `retry_count` 打回重试与防死循环安全退出机制。
+3. **多模型路由**：自然语言指令自动路由至本地脚本、免费翻译 API 或 DeepSeek 大模型。
+4. **MCP 协议探针**：可视化展示 MCP 客户端的 `initialize` / `tools/list` / `tools/call` 底层 JSON-RPC 报文。
+5. **Function Calling 演示**：基于 LangChain `@tool` 封装 MongoDB 查询工具，让大模型自动提取参数发起原生工具调用。
+
+### 控制台运行实况
+
+![统一控制台主界面](39-web-console-rag.png?raw=true)
+
+* **① RAG 知识库问答**：输入“我的账号不行了”，系统自动改写为“账号无法登录”，并通过混合检索（向量 0.7 + 关键词 0.3）精准召回相关文档。
   ![RAG 混合检索](40-web-console-rag-hybrid-search.png?raw=true)
- ② 多智能体协作演示：Retriever 与 Reviewer 协作，展示 retry_count 从 0 到 2 的重试与 give_up 安全退出机制，最终断言全部符合预期。 
-    ![多智能体状态流转](41-web-console-multi-agent-loop.png?raw=true)
-③ 多模型路由：输入“翻译多模型 为俄语”，自动路由到免费翻译 API，成功返回俄语结果 Мультимодель перевода。
-   ![多模型路由](42-web-console-router-translate.png?raw=true)  
- ④ MCP 协议探针：点击按钮，直接在网页上投射出 initialize 握手与 tools/call 调用的原始 JSON 报文（广州天气）。  
- ![MCP协议探针](43-web-console-mcp-probe.png?raw=true)
+* **② 多智能体协作演示**：Retriever 与 Reviewer 协作，展示 `retry_count` 从 0 到 2 的重试与 `give_up` 安全退出机制，最终断言全部符合预期。
+  ![多智能体状态流转](41-web-console-multi-agent-loop.png?raw=true)
+* **③ 多模型路由**：输入“翻译多模型 为俄语”，自动路由到免费翻译 API，成功返回俄语结果 `Мультимодель перевода`。
+  ![多模型路由](42-web-console-router-translate.png?raw=true)
+* **④ MCP 协议探针**：点击按钮，直接在网页上投射出 `initialize` 握手与 `tools/call` 调用的原始 JSON 报文（广州天气）。
+  ![MCP协议探针](43-web-console-mcp-probe.png?raw=true)
+* **⑤ Function Calling 演示**：通过自然语言提问“帮我查一下学号是 3 的学生叫什么名字？”，大模型自动提取参数 `{"student_id": 3}` 并发起原生工具调用。日志完整展示了 `HumanMessage -> AIMessage(决策) -> ToolMessage(查询 MongoDB 返回王五) -> AIMessage(最终回答)` 的完整 ReAct 闭环。
+  ![Function Calling 控制台演示](44-web-console-function-calling.png?raw=true)
 
 ## 🚀 核心收获
 1. 掌握了基于 Trace（轨迹）定位 AI 工具调用失败原因的方法。
