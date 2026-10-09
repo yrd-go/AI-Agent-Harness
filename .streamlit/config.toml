@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# .streamlit/config.toml —— Streamlit 运行配置（本地与 Streamlit Cloud 通用）
+#
+# 说明：
+#   - 主题色为可选配置，已按注释给出；如需启用，取消注释并重启应用即可。
+#   - 修改本文件后需要重新运行（本地）或 Reboot app（云端）才生效。
+#   - 密钥不要写在这里！请用本地 .env 或云端 Secrets，模板见
+#     .streamlit/secrets.toml.example。
+# ---------------------------------------------------------------------------
+
+[server]
+headless = true                 # 云端无浏览器环境，保持 true
+enableCORS = true               # 保持跨域限制开启（Streamlit Cloud 的嵌入无需关闭）
+enableXsrfProtection = true     # 开启 XSRF 防护
+maxUploadSize = 20              # MB
+
+[browser]
+gatherUsageStats = false        # 关闭匿名使用统计上报
+
+# [theme]
+# base = "light"
+# primaryColor = "#1F6FEB"
+# backgroundColor = "#FFFFFF"
+# secondaryBackgroundColor = "#F2F4F7"
+# textColor = "#1B1F24"
+# font = "sans serif"
