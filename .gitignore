@@ -1,0 +1,57 @@
+# ---------------------------------------------------------------------------
+# .gitignore
+# 目标：防止本地配置、API 密钥、虚拟环境与生成物被提交到 Git 仓库
+#
+# 重构说明（2026-10，配合 Streamlit Cloud 部署）：
+#   - 数据资源已集中到 data/ 下；其中 data/chroma_db 按需求「随仓库提交」，
+#     云端冷启动无需重新向量化，因此**不再**忽略 chroma_db/。
+#   - 新增忽略 .streamlit/secrets.toml（云端密钥），保留 .example 模板。
+# ---------------------------------------------------------------------------
+
+# ---- 本地环境变量文件（含真实 API Key，绝对不要提交）----
+.env
+.env.local
+.env.*.local
+
+# 反忽略：模板文件不含真实密钥，可以安全提交
+!.env.example
+
+# ---- Streamlit 云端密钥（含真实值，绝对不要提交）----
+.streamlit/secrets.toml
+
+# ---- 虚拟环境（当前目录已存在 .venv/）----
+.venv/
+.venv-rag/
+venv/
+env/
+ENV/
+*.egg-info/
+
+# ---- Python 缓存与构建产物 ----
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 数据目录说明 ----
+# data/knowledge_base.txt、data/chroma_db/、data/test.db 都要提交（云端随仓库启动）。
+# 只有下面这类运行时残留需要忽略：
+*.db-journal
+*.db-wal
+data/*.tmp
+
+# 若你更希望云端首次运行时自动重建向量库，取消下面这行的注释即可：
+# data/chroma_db/
+
+# ---- 日志与临时文件 ----
+*.log
+logs/*
+!logs/.gitkeep
+.DS_Store
+Thumbs.db
+~$*
+*.tmp

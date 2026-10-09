@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# .dockerignore —— 构建上下文瘦身（重构后的目录结构）
+#
+# 目标：把虚拟环境、缓存、日志、真实密钥排除在镜像之外，
+#       同时避免这些频繁变动的文件让 COPY . . 层缓存失效。
+# ---------------------------------------------------------------------------
+
+# ---- 版本控制与编辑器 ----
+.git/
+.gitignore
+.vscode/
+.idea/
+AGENTS.md
+
+# ---- 虚拟环境与缓存 ----
+.venv/
+.venv-rag/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 日志与运行产物 ----
+logs/*
+!logs/.gitkeep
+*.log
+*.tmp
+
+# ---- 真实密钥：绝不进镜像，容器里用 -e / env_file 注入 ----
+.env
+.env.local
+.env.*.local
+.streamlit/secrets.toml
+
+# ---- 文档（README 保留在仓库，镜像里不需要）----
+*.md
+
+# ---- 注意：不要忽略 Dockerfile 与 .dockerignore 本身，也不要忽略 data/ ----
+# data/knowledge_base.txt 与 data/chroma_db/ 是 RAG 模块的必需资源，必须进镜像。
