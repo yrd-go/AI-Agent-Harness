@@ -72,6 +72,8 @@ MONGO_COLLECTION = "students"
 4. **模块①RAG**：先在侧边栏把超时时间调到 300~600 秒再提问。首次若向量库不可读会重建，较慢。
 5. **模块⑤Function Calling**：退出码 1 表示「模型没有真正调用工具」（脚本既定语义），不等于崩溃；
    确认 `ZHIPU_API_KEY` 与 `MONGO_URI` 都正确后即可正常走到 `tool_calls`。
+   ⚠️ 注意：自检与烟雾测试把这类「已声明业务语义的非零退出码」记为 **WARN（未判定为健康）**，
+   不再算通过 —— 真绿是退出码 0。
 6. **模块④MCP 探针**：需要子进程 stdio 通信，Cloud 上允许；若报权限/管道错误，多半是平台限制，
    请改用普通终端运行 `python src/mcp_demo/mcp_protocol_probe.py`。
 
@@ -80,7 +82,11 @@ MONGO_COLLECTION = "students"
 ```bash
 python scripts/health_check.py        # 全量自检：目录/硬编码路径/导入/路径常量/启动烟雾
 python scripts/import_check.py        # 只查跨目录 import 与关键路径是否可达
+python tests/run_all.py               # 单元测试（纯标准库；受限环境不能用 python -m 时用这个）
 ```
+
+自检结论是三态的：`OK`（退出码 0）/ `WARN`（已声明业务语义的非零码，例如用了 mock 数据，
+**不计为健康**）/ `FAIL`（未声明的非零码）。缺第三方依赖会明确标成「跳过验证」，不会假装通过。
 
 ---
 

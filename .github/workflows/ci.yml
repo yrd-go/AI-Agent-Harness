@@ -1,0 +1,45 @@
+# ---------------------------------------------------------------------------
+# CI：只用标准库的单元测试 + 跨目录 import 自检
+#
+# 为什么不在 CI 里装 requirements.txt 全量依赖：
+#   chromadb / onnxruntime / langchain 体积大、装得慢，而且本仓库的测试刻意
+#   设计成「纯标准库即可运行」——第三方依赖缺失时，import_check.py 会把对应
+#   模块标为「跳过（缺依赖）」而不是假绿，这正是 P0 修复要保证的行为。
+#
+# 想跑全量端到端（含 MCP 探针负向用例）时，本地执行：
+#   pip install -r requirements.txt
+#   python -m unittest discover -s tests -v
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: 单元测试 + 导入自检（Python ${{ matrix.python-version }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 纯标准库单元测试（不需要任何第三方依赖）
+        run: python -m unittest discover -s tests -v
+
+      - name: 跨目录 import 与路径常量自检
+        # 缺第三方依赖的模块会被标记为「跳过验证」，不会假装健康；
+        # 真正的导入错误（语法错误 / 自有模块缺失）会让本步返回 1 并失败。
+        run: python scripts/import_check.py

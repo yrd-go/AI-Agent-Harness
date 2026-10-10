@@ -45,7 +45,7 @@ for _path in (str(_PROJECT_ROOT), str(_SRC_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from paths import load_env  # noqa: E402
+from paths import load_env, mask_uri  # noqa: E402
 
 load_env()
 
@@ -205,7 +205,9 @@ def main(argv=None) -> int:
         return 1 if payload["status"] == "mock" else 0
 
     if payload["status"] == "mock":
-        print(f"[mock] 未能连接 MongoDB（{MONGO_URI}），已返回模拟数据。")
+        # 只打印打码后的连接串：Atlas 连接串里带账号密码，而本脚本的输出会被
+        # Streamlit 页面原样渲染到公网。裸打印 MONGO_URI 等于把密码贴到网页上。
+        print(f"[mock] 未能连接 MongoDB（{mask_uri(MONGO_URI)}），已返回模拟数据。")
         print(f"[mock] 数据来源：内置模拟表（status=mock），不是真实数据库结果。")
         print(f"[mock] 修复方式：配置 MONGO_URI，或设置 STUDENT_ALLOW_MOCK=false 走严格模式。")
         print(json.dumps(payload, ensure_ascii=False, indent=2))

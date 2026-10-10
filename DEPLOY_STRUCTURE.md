@@ -2,7 +2,8 @@
 
 > 本文件记录 2026-10 的目录重构：Python 代码进 `src/`，数据进 `data/`，
 > JS 与运维脚本进 `scripts/`，所有路径改为**基于脚本自身位置动态计算**的绝对路径。
-> 项目介绍与踩坑记录请看根目录的 [README.md](README.md)（它保持原样不动）；
+> 项目介绍、架构与实测数据见根目录的 [README.md](README.md)（**已同步为重构后的命令**）；
+> 19 段踩坑与排错复盘见 [docs/PITFALLS.md](docs/PITFALLS.md)（44 张截图已归入 `docs/images/`）；
 > 云端部署的详细排错清单（报错对照表）见 [DEPLOY.md](DEPLOY.md)。
 
 ---
@@ -19,41 +20,51 @@
 my-agent/
 ├─ streamlit_app.py            # ★ 部署入口（Streamlit Cloud 的 Main file path 填它）
 ├─ requirements.txt            # 依赖清单（云端自动安装）
-├─ README.md                   # 项目介绍与踩坑记录（保持原样，44 张截图仍在根目录）
+├─ README.md                   # ★ 项目定位 / 架构 / 快速开始 / 实测数据 / 已知限制
+├─ LICENSE                     # MIT
 ├─ DEPLOY_STRUCTURE.md         # 本文件
 ├─ Dockerfile / .dockerignore  # 自建容器部署（可选路径）
 ├─ .env / .env.example         # 本地密钥（.env 不提交）与模板
 ├─ .streamlit/
 │  ├─ config.toml              # 主题 / server 配置
 │  └─ secrets.toml.example     # 云端 Secrets 模板
+├─ .github/workflows/ci.yml    # CI：单元测试 + 跨目录导入自检
 ├─ src/
-│  ├─ paths.py                 # ★ 全项目唯一的路径 / 环境变量中心
+│  ├─ paths.py                 # ★ 全项目唯一的路径 / 环境变量中心（含 mask_uri / mask_secrets）
 │  ├─ rag_demo.py              # ① RAG 知识库问答
 │  ├─ multi_agent_demo.py      # ② 多智能体协作（LangGraph 状态图）
 │  ├─ core/                    # ③ 路由、⑤ Function Calling、MongoDB 工具
 │  │  ├─ router.py  ├─ query_student.py  ├─ init_db.py
 │  │  ├─ agent_tool_demo.py     └─ employee_api.py
-│  ├─ mcp_demo/                # ④ MCP 服务端 / 客户端 / 协议探针
+│  ├─ mcp_demo/                # ④ MCP 服务端 / 客户端 / 旁路探针
 │  │  ├─ mcp_weather_server.py  ├─ mcp_weather_client.py
 │  │  └─ mcp_protocol_probe.py
 │  └─ ui/dashboard.py          # Streamlit 页面实现（页面逻辑在这里）
 ├─ data/                       # 运行时数据（随仓库提交）
 │  ├─ knowledge_base.txt       # RAG 知识库原文
-│  ├─ chroma_db/               # 向量库（当前为 zhipu 2048 维，181 片段）
+│  ├─ chroma_db/               # 向量库（当前为 zhipu 2048 维）
 │  └─ test.db                  # 示例 SQLite（Node.js 侧脚本使用）
+├─ docs/
+│  ├─ PITFALLS.md              # ★ 19 段踩坑与排错复盘
+│  └─ images/                  # ★ 44 张实测截图（01~44，编号与正文对应）
+├─ tests/                      # 纯标准库单元测试（52 用例）+ fixtures
+│  ├─ run_all.py               # 不能用 python -m 的受限环境的测试入口
+│  └─ fixtures/                # find_project_root 的静态 marker 目录（零运行时写盘）
 ├─ scripts/
-│  ├─ health_check.py          # ★ 全量健康自检
+│  ├─ health_check.py          # ★ 全量健康自检（三态结论：OK / WARN / FAIL）
 │  ├─ import_check.py          # 跨目录 import / 路径排错
+│  ├─ publish_docs_to_github.ps1  # 把本地文档与改动一键同步到 GitHub
 │  ├─ js/                      # Node.js 演示脚本（8 个）
 │  └─ legacy/                  # 迁移前的 Dockerfile 等归档
 ├─ logs/                       # 日志与临时输出
 ├─ assets/samples/             # 示例文本
-└─ 01~44-*.png / README_EN.md  # 截图与英文说明：**位置保持不变**
+└─ README_EN.md                # 英文说明：**只在远端维护**，本轮尚未同步（见 README 已知限制）
 ```
 
 ## 三、命令对照表（旧 → 新）
 
-`README.md` 里记录的是重构前的命令，两者对应关系如下（功能完全一致）：
+`README.md` 已经更新为重构后的命令；下表保留「旧 → 新」对照，方便对照历史截图与旧笔记
+（功能完全一致）：
 
 | 旧命令（README 里写的） | 新命令 |
 |---|---|

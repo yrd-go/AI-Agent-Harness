@@ -9,6 +9,9 @@ MCP（Model Context Protocol）里，Server 负责"提供能力"，Client（这�
 三条必须记住的规则（stdio 传输特有）：
     1. stdout 就是协议线。服务端里绝对不能用 print() 输出任何东西，
        否则报文被污染，客户端会直接解析失败。要日志就用 logging（默认走 stderr）。
+       ★ 为了能「按需复现」这个故障，本文件提供了 MCP_POLLUTE_STDOUT=1 开关：
+         打开后工具会在 stdout 上故意写一行文本，专门给
+         mcp_protocol_probe.py --break-stdout 当负向样例用。默认关闭，正常运行不受影响。
     2. run() 必须放在 if __name__ == "__main__": 里面。mcp dev / mcp run /
        客户端拉子进程都会先 import 这个文件，没有守卫就会在导入时把服务器跑起来。
     3. 工具的 docstring + 类型标注（这里的 city: str）会被 SDK 自动转成 JSON Schema，
@@ -29,6 +32,7 @@ MCP（Model Context Protocol）里，Server 负责"提供能力"，Client（这�
 from __future__ import annotations
 
 import logging
+import os
 import sys
 
 # ---------------------------------------------------------------------------
@@ -54,6 +58,14 @@ except ImportError:  # mcp 1.x
 mcp = _ServerBase("weather-demo")
 
 logger = logging.getLogger("weather-demo")
+
+# 故意污染 stdout 的开关（默认关闭）。真值写法与项目其他脚本保持一致。
+_TRUTHY = {"1", "true", "yes", "y", "on"}
+
+
+def _pollute_enabled() -> bool:
+    """是否要求「故意污染 stdout」——只由探针的 --break-stdout 设置。"""
+    return os.environ.get("MCP_POLLUTE_STDOUT", "").strip().lower() in _TRUTHY
 
 # ---------------------------------------------------------------------------
 # 2. 模拟数据（真实项目里这里换成气象 API 调用即可，协议层完全不用改）
@@ -105,6 +117,17 @@ def get_current_weather(city: str) -> str:
     result = f"{name}：{detail}"
     # 日志走 stderr，绝不影响 stdout 上的 JSON-RPC 报文
     logger.info("tools/call get_current_weather(city=%r) -> %s", city, result)
+
+    # ------------------------------------------------------------------
+    # 负向样例（仅 MCP_POLLUTE_STDOUT=1 时触发）：
+    # 这一行是「经典错误示范」——stdio 传输下 stdout 是协议线，往这里写任何东西
+    # 都会把 JSON-RPC 报文搅乱，客户端随即解析失败或卡住。
+    # 探针的 --break-stdout 就是靠它把故障稳定复现出来，用来验证排障路径。
+    # ------------------------------------------------------------------
+    if _pollute_enabled():
+        sys.stdout.write("[POLLUTED] 这行本该走 stderr，现在被写进了协议线 stdout\n")
+        sys.stdout.flush()
+
     return result
 
 

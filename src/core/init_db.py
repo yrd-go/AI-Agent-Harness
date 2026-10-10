@@ -28,7 +28,7 @@ for _path in (str(_PROJECT_ROOT), str(_SRC_DIR)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-from paths import load_env  # noqa: E402
+from paths import load_env, mask_uri  # noqa: E402
 
 load_env()
 
@@ -65,7 +65,8 @@ def main():
 
         count = collection.count_documents({})
         print(
-            f"已连接 MongoDB（{MONGO_URI}），"
+            # Atlas 连接串含账号密码，且该输出会被 Streamlit 页面渲染到公网，必须打码
+            f"已连接 MongoDB（{mask_uri(MONGO_URI)}），"
             f"数据库 {DB_NAME} 集合 {COLLECTION_NAME} "
             f"插入 {len(result.inserted_ids)} 条数据，当前共 {count} 条："
             "1 张三，2 李四，3 王五"

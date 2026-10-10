@@ -1,0 +1,9 @@
+# 占位文件：让 Git 保留 docs/images/ 目录
+#
+# GitHub 上的 44 张实测截图统一放在这个目录（编号 01~44，与 docs/PITFALLS.md 正文一一对应）。
+# 为什么要从仓库根目录移进来：
+#   1. 根目录从「44 张图 + 一堆脚本」变成「src / scripts / data / docs」四块，第一眼就是工程项目；
+#   2. 截图与文档放同一棵树，README 首屏不再被图片淹没；
+#   3. 用 git mv 迁移，GitHub 上的历史与图片链接都不会丢。
+#
+# 迁移命令见 scripts/publish_docs_to_github.ps1（git mv 01-*.png ... docs/images/）。

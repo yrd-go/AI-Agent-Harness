@@ -95,11 +95,11 @@ langchain[mcp]>=1.4.0
 # langchain-mcp-adapters
 
 # ---------------------------------------------------------------------------
-# Web 控制台依赖（web_demo/dashboard.py 使用）
+# Web 控制台依赖（根目录 streamlit_app.py + src/ui/dashboard.py 使用）
 #
 # 说明：
 #   - 纯 Python 前端框架，用于展示 RAG / 多智能体 / 路由 / MCP 探针的交互界面。
 #   - 不需要 FastAPI 或 Uvicorn：控制台通过 subprocess 调度后台脚本，
-#     并把 stdout/stderr 原样投射到网页。
+#     并把 stdout/stderr 脱敏后投射到网页（见 src/paths.py 的 mask_secrets）。
 # ---------------------------------------------------------------------------
 streamlit

@@ -68,6 +68,7 @@ from paths import (  # noqa: E402
     KB_FILE,
     VENV_CANDIDATES,
     load_env,
+    mask_secrets,
     subprocess_env,
 )
 import streamlit as st  # noqa: E402
@@ -252,10 +253,13 @@ def get_result(key: str) -> RunResult | None:
 
 
 def render_result(res: RunResult) -> None:
-    st.caption("执行命令：" + " ".join(_quote(str(c)) for c in res.cmd))
+    # 最后一道脱敏网：子脚本和第三方库都有可能把连接串 / API Key 打进 stdout、
+    # stderr 或异常文本，而这里是**公网页面**。渲染前统一打码，任何情况下都不把
+    # 凭据送到浏览器（源头不打印 + 出口打码，两层都要有）。
+    st.caption("执行命令：" + mask_secrets(" ".join(_quote(str(c)) for c in res.cmd)))
 
     if res.error:
-        st.error(f"❌ {res.error}")
+        st.error(f"❌ {mask_secrets(res.error)}")
         return
 
     if res.timed_out:
@@ -272,17 +276,23 @@ def render_result(res: RunResult) -> None:
             "请看下方 stderr 中的错误输出。"
         )
 
-    stdout = (res.stdout or "").strip()
+    stdout_raw = res.stdout or ""
+    stdout = mask_secrets(stdout_raw).strip()
     if stdout:
         st.markdown("**标准输出（stdout）**")
-        st.code(res.stdout, language="text")
+        if stdout != stdout_raw.strip():
+            st.caption("（输出中检测到疑似凭据，已打码后展示）")
+        st.code(stdout, language="text")
     elif not res.timed_out:
         st.info("该脚本没有产生任何标准输出。")
 
-    stderr = (res.stderr or "").strip()
+    stderr_raw = res.stderr or ""
+    stderr = mask_secrets(stderr_raw).strip()
     if stderr:
         with st.expander("stderr（错误输出）", expanded=not res.ok):
-            st.code(res.stderr, language="text")
+            if stderr != stderr_raw.strip():
+                st.caption("（输出中检测到疑似凭据，已打码后展示）")
+            st.code(stderr, language="text")
 
 
 def render_result_if_any(key: str) -> None:

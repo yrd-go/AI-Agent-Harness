@@ -66,7 +66,8 @@ OPTIONAL_PACKAGES = {
 
 # 期望存在的目录/文件（相对仓库根）
 EXPECTED_DIRS = ("src", "src/core", "src/mcp_demo", "src/ui", "data", "scripts",
-                 "scripts/js", "scripts/legacy", "logs", "assets/samples", ".streamlit")
+                 "scripts/js", "scripts/legacy", "logs", "assets/samples", ".streamlit",
+                 "docs", "docs/images", "tests", ".github/workflows")
 EXPECTED_FILES = (
     "requirements.txt",
     "streamlit_app.py",
@@ -98,14 +99,19 @@ EXPECTED_FILES = (
     "scripts/health_check.py",
     "scripts/import_check.py",
     "scripts/legacy/Dockerfile.legacy",
+    "README.md",
+    "LICENSE",
+    "docs/PITFALLS.md",
+    ".github/workflows/ci.yml",
 )
 # 允许缺失（存在则报告为 OK，不存在只提示）
 TOLERATED_FILES = (".env", "router_output.png", "assets/samples/hello.txt")
 
 # 只在「远程仓库 / clone 出来的工作副本」里才要求存在、本地源码目录允许缺失的文件。
-# 背景：本地源码目录刻意不保留 README.md（保护 GitHub 上那份带 44 张图的原文，
-# 也避免误覆盖）；README 只在 clone 出来的副本里维护。
-CLONE_ONLY_FILES = ("README.md",)
+# 背景：README.md 已改为「本地即改动源」，推送由 scripts/publish_docs_to_github.ps1
+# 完成，因此它进了 EXPECTED_FILES；只剩英文版 README_EN.md 仍在远端维护，
+# 它在本地缺失属预期行为，不算失败。
+CLONE_ONLY_FILES = ("README_EN.md",)
 
 # 硬编码路径检测规则：(正则/子串, 说明)
 HARDCODE_PATTERNS = (
@@ -175,20 +181,19 @@ def check_layout() -> None:
     else:
         record("OK", f"目录结构完整（{len(EXPECTED_DIRS)} 个目录 / {len(EXPECTED_FILES)} 个关键文件）")
 
-    # 根目录必须保留的资产
+    # 可选资产（截图已归入 docs/images/，根目录只留 router_output.png 这张历史产物）
     kept = [f for f in TOLERATED_FILES if (PROJECT_ROOT / f).is_file()]
     record("OK" if "router_output.png" in kept else "WARN",
-           "根目录保留资产（README.md / *.png 按约定留在根目录）",
+           "可选资产（缺失不致命：.env / 历史截图 / 示例文本）",
            "存在: " + (", ".join(kept) or "无"))
 
-    # clone-only 文件：本地源码目录允许缺失，clone 出来的工作副本里必须存在
+    # clone-only 文件：本地源码目录允许缺失，clone 出来的工作副本里应当存在
     clone_only = [f for f in CLONE_ONLY_FILES if not (PROJECT_ROOT / f).is_file()]
     if clone_only:
         record("OK", f"{', '.join(clone_only)} 未在本地源码目录（预期行为）",
-               "这些文件只在 clone 出来的工作副本里维护（保护 GitHub 上的原文与图片链接），"
-               "不参与本地推送；若当前是 clone 目录，请检查是否被误删。")
+               "这类文件只在 clone 出来的工作副本里维护；若当前是 clone 目录，请检查是否被误删。")
     else:
-        record("OK", "README.md 存在（当前看起来是 clone 出来的工作副本）")
+        record("OK", f"{', '.join(CLONE_ONLY_FILES)} 存在（当前看起来是 clone 出来的工作副本）")
 
     # 旧路径残留检查
     leftovers = [p for p in ("web_demo", "chroma_db", "knowledge_base.txt", "test.db")
@@ -273,7 +278,14 @@ def top_level_imports(path: Path) -> list[tuple[str, int]]:
 
 def check_imports() -> None:
     print("\n【3/5】静态导入检查")
+    # 项目自有的顶层模块 = 源码文件的 stem（rag_demo / paths ...）
+    #                    + src/ 下的子包（core / ui / mcp_demo）
+    #                    + 仓库根的目录（tests / scripts / docs ...）
+    # 不加这几类会把 `import core.router` 误判成「缺第三方包 core」并提示 pip install core，
+    # 属于自检工具自身的假阳性（tests/ 曾触发过），因此这里显式白名单化。
     local_modules = {p.stem for p in SRC_DIR.rglob("*.py") if p.name != "__init__.py"}
+    local_modules |= {p.name for p in SRC_DIR.iterdir() if p.is_dir()}
+    local_modules |= {p.name for p in PROJECT_ROOT.iterdir() if p.is_dir()}
     missing: dict[str, set[str]] = {}
     checked = 0
 
@@ -385,18 +397,33 @@ def check_paths_module() -> None:
 # ---------------------------------------------------------------------------
 # 5) 启动烟雾测试（真实子进程）
 # ---------------------------------------------------------------------------
-SMOKE_CASES: tuple[tuple[str, str, tuple[str, ...], int], ...] = (
-    # (展示名, 脚本相对路径, 附加参数, 超时秒)
-    ("src/rag_demo.py --help", "src/rag_demo.py", ("--help",), 60),
-    ("src/multi_agent_demo.py", "src/multi_agent_demo.py", (), 120),
-    ("src/core/router.py --help", "src/core/router.py", ("--help",), 60),
-    ("src/core/query_student.py 2", "src/core/query_student.py", ("2",), 60),
-    ("src/core/agent_tool_demo.py --help", "src/core/agent_tool_demo.py", ("--help",), 60),
-    ("src/mcp_demo/mcp_weather_client.py --help", "src/mcp_demo/mcp_weather_client.py", ("--help",), 60),
-    ("src/mcp_demo/mcp_weather_server.py --help", "src/mcp_demo/mcp_weather_server.py", ("--help",), 60),
-    ("src/mcp_demo/mcp_protocol_probe.py", "src/mcp_demo/mcp_protocol_probe.py", (), 90),
+SMOKE_CASES: tuple[tuple[str, str, tuple[str, ...], int, tuple[int, ...]], ...] = (
+    # (展示名, 脚本相对路径, 附加参数, 超时秒, 属于「业务降级/未走到核心路径」的退出码)
+    #
+    # ★ 第 5 列是这次修复假绿的关键：非零退出码必须在这里声明过业务语义才会记为 WARN，
+    #   没声明的一律 FAIL。旧版本写的是「returncode not in (0, 1) 才算失败」，等于把
+    #   「用了 mock 数据 / 没调用工具 / 没配 Key」全部当成健康，自检因此会假绿。
+    #
+    # 各用例退出码语义（与各脚本 docstring 保持一致）：
+    #   query_student   1=mock 数据  2=参数错误  3=严格模式下连接/查询失败
+    #   router          --help 未命中任何路由 -> 打印用法并返回 1（既定行为）
+    #   agent_tool_demo 1=未发生工具调用（缺 ZHIPU_API_KEY 时也走这里）
+    #   MCP 客户端/探针 1/2/3=缺 Key 或 SDK、4=协议层真的失败了
+    ("src/rag_demo.py --help", "src/rag_demo.py", ("--help",), 60, ()),
+    ("src/multi_agent_demo.py", "src/multi_agent_demo.py", (), 120, ()),
+    ("src/core/router.py --help", "src/core/router.py", ("--help",), 60, (1,)),
+    ("src/core/query_student.py 2", "src/core/query_student.py", ("2",), 60, (1, 2, 3)),
+    ("src/core/agent_tool_demo.py --help", "src/core/agent_tool_demo.py", ("--help",), 60, (1, 2)),
+    ("src/mcp_demo/mcp_weather_client.py --help",
+     "src/mcp_demo/mcp_weather_client.py", ("--help",), 60, (1, 2, 3)),
+    # 服务端是 stdio 长驻进程，直接跑会一直等 stdin（旧写法必然超时被记 FAIL）；
+    # 这里改成「只导入、不 run()」：__main__ 守卫保证不会起服务，仍能验证 SDK 与导入链。
+    ("src/mcp_demo/mcp_weather_server.py（仅导入）", "-c",
+     ("import sys;sys.path.insert(0,'src');import mcp_demo.mcp_weather_server as m;"
+      "print('server-sdk:', m.SDK_FLAVOR)",), 60, (1,)),
+    ("src/mcp_demo/mcp_protocol_probe.py", "src/mcp_demo/mcp_protocol_probe.py", (), 90, (2, 3)),
     # 用独立脚本做导入检查（避免把多语句 Python 代码塞进 -c，受 shell 引号转义影响）
-    ("scripts/import_check.py（跨目录 import 检查）", "scripts/import_check.py", (), 90),
+    ("scripts/import_check.py（跨目录 import 检查）", "scripts/import_check.py", (), 90, ()),
 )
 
 # 这些用例会创建子进程管道（MCP 客户端/探针要跟子进程说 stdio 协议）。
@@ -408,8 +435,12 @@ PIPE_DEPENDENT_CASES = frozenset({
 
 
 def run_smoke(python_bin: str, script: str, args: tuple[str, ...],
-              timeout: int) -> tuple[bool, str]:
-    """用子进程真实启动脚本，回传 (是否正常, 详情)。
+              timeout: int, business_codes: tuple[int, ...] = ()) -> tuple[str, str]:
+    """用子进程真实启动脚本，回传 ("OK" | "WARN" | "FAIL", 详情)。
+
+    business_codes 是「有明确业务语义的非零退出码」（例如 query_student 的 1 = 用了
+    mock 数据）。命中它只记为 WARN —— 自检不会再把握手降级误报成健康；未声明的
+    非零退出码一律 FAIL。
 
     script 传相对仓库根的脚本路径（用正斜杠，Windows/Linux 都成立）；
     传 "-c" 时表示直接执行 args 里的内联代码。
@@ -449,17 +480,17 @@ def run_smoke(python_bin: str, script: str, args: tuple[str, ...],
                 )
                 returncode = proc.returncode
             except subprocess.TimeoutExpired:
-                return False, f"超时（{timeout}s）—— 可能正在等网络或交互输入"
+                return "FAIL", f"超时（{timeout}s）—— 可能正在等网络或交互输入"
             except OSError as exc:
-                return False, f"无法启动子进程：{exc}"
+                return "FAIL", f"无法启动子进程：{exc}"
             sink.seek(0)
             combined = sink.read()
     except OSError as exc:
-        return False, f"无法创建日志临时文件：{exc}"
+        return "FAIL", f"无法创建日志临时文件：{exc}"
 
     if "Traceback (most recent call last)" in combined:
         tail = [ln for ln in combined.splitlines() if ln.strip()][-6:]
-        return False, "出现 Traceback：\n     " + "\n     ".join(tail)
+        return "FAIL", "出现 Traceback：\n     " + "\n     ".join(tail)
     # 解释器参数错误 / 找不到脚本：这类错误没有 traceback，必须显式识别，
     # 否则会把「根本没跑起来」误判成通过。
     # 注意：只在「输出开头」判断启动期错误，避免脚本业务输出里出现同名文字造成误报。
@@ -467,27 +498,44 @@ def run_smoke(python_bin: str, script: str, args: tuple[str, ...],
     fatal_markers = ("can't open file", "No such file or directory",
                      "No module named", "SyntaxError")
     if any(marker in first_lines for marker in fatal_markers):
-        return False, "启动即失败：\n     " + first_lines.replace("\n", "\n     ")
-    if returncode not in (0, 1):     # 1 多为业务判定（如未连上 MongoDB / 未调用工具）
-        tail = [ln for ln in combined.splitlines() if ln.strip()][-4:]
-        return False, f"退出码 {returncode}：\n     " + "\n     ".join(tail)
-    head = [ln for ln in combined.splitlines() if ln.strip()][:1]
-    return True, f"退出码 {returncode}，无 traceback" + (f"｜首行输出：{head[0][:70]}" if head else "")
+        return "FAIL", "启动即失败：\n     " + first_lines.replace("\n", "\n     ")
+    tail = [ln for ln in combined.splitlines() if ln.strip()][-4:]
+    detail = "\n     ".join(tail)
+    if returncode == 0:
+        head = [ln for ln in combined.splitlines() if ln.strip()][:1]
+        return "OK", "退出码 0，无 traceback" + (f"｜首行输出：{head[0][:70]}" if head else "")
+    if returncode in business_codes:      # 已声明业务语义的非零码：降级运行，不算健康
+        # 受限沙箱下的「管道不可用」常表现为某个脚本以约定退出码结束，
+        # 而它的 stderr 因为块缓冲不一定落在输出尾部；这里在全量输出里再匹配一次，
+        # 把「环境限制」与「业务降级」区分开（前者由 check_smoke 记为 SKIP）。
+        env_hint = ""
+        if any(marker in combined for marker in SANDBOX_MARKERS):
+            env_hint = ("\n     [环境限制特征] 命中沙箱标志（WinError 5 / 拒绝访问 / EPERM）："
+                        "本条属环境限制，不是代码问题")
+        return "WARN", (
+            f"退出码 {returncode}（业务降级/未走到核心路径；已声明的语义码 {business_codes}）"
+            f"，不能判定为健康：\n     {detail}{env_hint}"
+        )
+    return "FAIL", f"退出码 {returncode}（未声明的失败码）：\n     {detail}"
 
 
 def check_smoke(python_bin: str) -> None:
     print("\n【5/5】启动烟雾测试")
-    for label, script, args, timeout in SMOKE_CASES:
+    for label, script, args, timeout, business_codes in SMOKE_CASES:
         start = time.perf_counter()
-        ok, detail = run_smoke(python_bin, script, args, timeout)
+        status, detail = run_smoke(python_bin, script, args, timeout, business_codes)
         cost = time.perf_counter() - start
-        if ok:
+        if status == "OK":
             record("OK", f"{label}（{cost:.1f}s）", detail)
         elif label in PIPE_DEPENDENT_CASES and any(m in detail for m in SANDBOX_MARKERS):
+            # 顺序很重要：环境限制要先于 WARN 判断，否则「沙箱不让开管道」会被记成
+            # 「业务降级」，看起来像代码问题。
             record("SKIP", f"{label}（{cost:.1f}s）",
                    "受限沙箱禁止创建子进程管道（WinError 5），无法在此环境验证；"
                    "该用例与代码路径无关，请在普通终端重跑：\n       "
                    f"python {script}")
+        elif status == "WARN":
+            record("WARN", f"{label}（{cost:.1f}s）", detail)
         else:
             record("FAIL", f"{label}（{cost:.1f}s）", detail)
 
@@ -525,7 +573,7 @@ def main() -> int:
     passed = [r for r in RESULTS if r[0] == "OK"]
     print("\n" + "=" * 78)
     print(f"汇总：{len(RESULTS)} 项检查 -> 通过 {len(passed)}，"
-          f"警告 {len(warns)}，跳过 {len(skips)}，失败 {len(fails)}")
+          f"未判定为健康（WARN）{len(warns)}，跳过 {len(skips)}，失败 {len(fails)}")
     if fails:
         print("\n失败项：")
         for _level, title, detail in fails:
@@ -535,7 +583,7 @@ def main() -> int:
         for _level, title, _detail in skips:
             print(f"  [SKIP] {title}")
     if warns:
-        print("\n警告项（通常是本机未装的可选依赖，云端由 requirements.txt 补齐）：")
+        print("\n警告项（**未判定为健康**：缺可选依赖，或业务降级运行，例如用了 mock 数据）：")
         for _level, title, _detail in warns:
             print(f"  [WARN] {title}")
     print("=" * 78)

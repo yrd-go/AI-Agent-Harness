@@ -21,14 +21,18 @@ src/paths.py —— 全项目唯一的路径与环境变量中心（云端 Linux
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
 __all__ = [
     "PROJECT_ROOT", "SRC_DIR", "ASSETS_DIR", "DATA_DIR", "LOGS_DIR", "SCRIPTS_DIR",
-    "KB_FILE", "CHROMA_DIR", "TEST_DB", "ENV_FILE", "SECRETS_FILE", "SERVER_SCRIPT",
+    "KB_FILE", "CHROMA_DIR", "TEST_DB", "ENV_FILE", "SECRETS_FILE",
+    "SERVER_SCRIPT", "PROBE_SCRIPT", "RAG_SCRIPT", "MULTI_AGENT_SCRIPT",
+    "ROUTER_SCRIPT", "QUERY_STUDENT_SCRIPT", "AGENT_TOOL_SCRIPT",
     "INTERPRETER", "VENV_CANDIDATES",
-    "find_project_root", "load_env", "subprocess_env",
+    "find_project_root", "bootstrap", "load_env", "subprocess_env",
+    "mask_uri", "mask_secrets",
 ]
 
 # 根目录锚点文件：命中任意一个即认为是项目根目录
@@ -197,3 +201,62 @@ def subprocess_env() -> dict:
     if src_text not in existing.split(os.pathsep):
         env["PYTHONPATH"] = f"{src_text}{os.pathsep}{existing}" if existing else src_text
     return env
+
+
+# ---------------------------------------------------------------------------
+# 密钥脱敏（只打码，永远不还原、不落盘、不回显）
+#
+# 为什么放在 paths.py：
+#     它是全项目唯一的公共模块，脚本与 Streamlit 页面都会 import 它，因此脱敏
+#     规则只有一处定义，不会各写一份、各自漂移。
+#
+# 分层防御：
+#     第 1 层（源头）：代码本身不打印密钥值，只打印「键名/来源/数量」；
+#     第 2 层（出口）：真要打印连接串时走 mask_uri()，只留主机与库名；
+#     第 3 层（兜底）：子脚本 + 第三方库的 stdout/stderr 在渲染进网页前
+#                     统一走 mask_secrets()，避免任何意外把凭据送到浏览器。
+# ---------------------------------------------------------------------------
+# mongodb://user:pass@host  ->  mongodb://***:***@host
+_URI_USERINFO_RE = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<userinfo>[^/@\s]+)@"
+)
+
+# 其余常见密钥形态：sk-xxx / Bearer xxx / key=value 形式的凭据
+_SECRET_RULES = (
+    (re.compile(r"sk-[A-Za-z0-9_\-]{8,}"), "sk-***"),
+    (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._\-]{8,}"), r"\1 ***"),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token"
+            r"|password|passwd|pwd|secret)\b(\s*[=:]\s*)([^\s,;'\"]+)"
+        ),
+        r"\1\2***",
+    ),
+)
+
+
+def mask_uri(uri: object) -> str:
+    """把连接串里的账号密码打码，保留 scheme / 主机 / 端口 / 库名，便于排错对照。
+
+    mongodb+srv://yrd:secret@cluster0.x.mongodb.net/?retryWrites=true
+        -> mongodb+srv://***:***@cluster0.x.mongodb.net/?retryWrites=true
+
+    无凭据的连接串原样返回（本地 localhost 场景不产生噪音）。
+    """
+    if not uri:
+        return ""
+    return _URI_USERINFO_RE.sub(lambda m: f"{m.group('scheme')}***:***@", str(uri))
+
+
+def mask_secrets(text: object) -> str:
+    """通用脱敏兜底：任何要写日志或渲染到页面的文本，先过一遍这里。
+
+    覆盖：连接串凭据、sk- 开头的 Key、Bearer 令牌、key=value / key: value 形式的密钥。
+    注意：这是「最后一道网」，不是唯一一道 —— 代码本来也不该打印密钥值。
+    """
+    if not text:
+        return ""
+    out = _URI_USERINFO_RE.sub(lambda m: f"{m.group('scheme')}***:***@", str(text))
+    for pattern, repl in _SECRET_RULES:
+        out = pattern.sub(repl, out)
+    return out
