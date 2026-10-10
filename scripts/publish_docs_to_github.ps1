@@ -22,16 +22,24 @@
 
 .EXAMPLE
     # 1) 先干跑，看 diff（推荐第一步）
-    pwsh -File scripts\publish_docs_to_github.ps1 -UserEmail "you@example.com"
+    powershell -ExecutionPolicy Bypass -File "C:\Users\Administrator\my-agent\scripts\publish_docs_to_github.ps1" -UserEmail "you@example.com"
 
 .EXAMPLE
     # 2) 确认无误后真正提交并推送
-    pwsh -File scripts\publish_docs_to_github.ps1 -UserEmail "you@example.com" -Push
+    powershell -ExecutionPolicy Bypass -File "C:\Users\Administrator\my-agent\scripts\publish_docs_to_github.ps1" -UserEmail "you@example.com" -Push
 
 .NOTES
-    建议用 PowerShell 7（pwsh）执行；Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本可能显示乱码
-    （不影响 git 操作本身）。推送时若提示输入凭据，请用 GitHub 的 Personal Access Token 作为密码，
-    或提前配置好 Git Credential Manager。
+    启动方式（两种都行；本机只装了 Windows PowerShell 5.1，**不需要**安装 PowerShell 7）：
+        ① 最稳：
+             powershell -ExecutionPolicy Bypass -File "<脚本路径>" -UserEmail "..." [-Push]
+        ② 已经在本机 PowerShell 窗口里时：
+             & "<脚本路径>" -UserEmail "..." [-Push]
+           若提示「未对文件进行数字签名」，说明当前执行策略更严，改用第 ① 种即可。
+
+    脚本已存为「带 BOM 的 UTF-8」，因此 PowerShell 5.1 也能正确读中文。
+    推送时会用 Git Credential Manager 弹浏览器登录，需先执行一次：
+        git config --global credential.helper manager
+    若改用令牌：push 时用户名填 GitHub 用户名、密码粘贴 Personal Access Token。
 #>
 [CmdletBinding()]
 param(
@@ -53,9 +61,16 @@ function Warn($text) { Write-Host "  [WARN] $text" -ForegroundColor Yellow }
 function Die($text)  { Write-Host "  [FAIL] $text" -ForegroundColor Red; exit 1 }
 
 function Invoke-Git {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    & git -C $WorkDir @Args
-    if ($LASTEXITCODE -ne 0) { Die "git $($Args -join ' ') 失败（退出码 $LASTEXITCODE）" }
+    # 刻意不使用 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)：
+    #   在 Windows PowerShell 5.1 下，带 [Parameter()] 的函数会变成"高级函数"，
+    #   于是 `git add -A` 里的 `-A` 会被当成参数名 `Args` 的缩写 —— 直接报错
+    #   「缺少参数"Args"的某个参数」（已实测复现）。
+    #   改用简单函数 + 自动变量 $args 后，`-A` / `--hard` / `-m` 都会原样透传给 git。
+    $gitArgs = $args
+    & git -C $WorkDir @gitArgs
+    if ($LASTEXITCODE -ne 0) {
+        Die ("git " + ($gitArgs -join ' ') + " 失败（退出码 $LASTEXITCODE）")
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -121,7 +136,7 @@ Step "3/6 用本地改动覆盖仓库文件"
 # ---------------------------------------------------------------------------
 $files = @(
     "README.md", "LICENSE", "requirements.txt", "DEPLOY.md", "DEPLOY_STRUCTURE.md",
-    ".gitignore", "streamlit_app.py", "Dockerfile"
+    ".gitignore", ".gitattributes", "streamlit_app.py", "Dockerfile"
 )
 foreach ($f in $files) {
     $src = Join-Path $SourceDir $f

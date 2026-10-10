@@ -49,6 +49,20 @@ def classify(exc: Exception) -> tuple[str, str]:
     return "fail", f"{type(exc).__name__}: {exc}"
 
 
+def describe_system_exit(exc: SystemExit) -> str:
+    """描述「模块在导入期调用 sys.exit」这种情况。
+
+    为什么必须单独处理：
+        SystemExit 继承 BaseException，`except Exception` 抓不到它。
+        某个模块只要在顶层写了 sys.exit()，本检查器自己就会被带崩并返回非零退出码
+        —— 看上去像「路径检查失败」，实际是「有模块不该在导入期退出进程」。
+        （src/multi_agent_demo.py 曾经就是这样，CI 第一次跑就红了。）
+    """
+    code = exc.code
+    shown = repr(code) if code is not None else "0"
+    return f"导入期调用了 sys.exit({shown})（模块顶层不应退出进程）"
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -92,6 +106,10 @@ def main() -> int:
         import ui.dashboard as dashboard  # noqa: PLC0415
 
         print(f"ui.dashboard     : 导入成功（脚本目录 {dashboard.SCRIPT_RAG.parent}）")
+    except SystemExit as exc:  # noqa: BLE001  BaseException 子类，必须单独接
+        why = describe_system_exit(exc)
+        print(f"[SKIP] ui.dashboard 未验证：{why}")
+        skipped.append(f"ui.dashboard（{why}）")
     except Exception as exc:  # noqa: BLE001
         kind, why = classify(exc)
         if kind == "skip":
@@ -107,6 +125,10 @@ def main() -> int:
         try:
             __import__(module)
             print(f"{module:<18}: 导入成功")
+        except SystemExit as exc:  # noqa: BLE001  BaseException 子类，必须单独接
+            why = describe_system_exit(exc)
+            print(f"{module:<18}: 跳过（{why}）")
+            skipped.append(f"{module}（{why}）")
         except Exception as exc:  # noqa: BLE001
             kind, why = classify(exc)
             if kind == "skip":

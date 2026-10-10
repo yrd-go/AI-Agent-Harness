@@ -43,11 +43,17 @@ try:
 except Exception:
     pass
 
+LANGGRAPH_ERROR: Exception | None = None
 try:
     from langgraph.graph import END, START, StateGraph
-except ImportError:  # pragma: no cover
-    print("[FATAL] 没有找到 langgraph，请先安装：pip install langgraph")
-    sys.exit(1)
+except ImportError as _exc:  # pragma: no cover - 只有没装 langgraph 时走到
+    # 刻意不在这里调用 sys.exit()：
+    #   模块级 sys.exit 会让「导入本模块」这件事本身失败，而 SystemExit 继承
+    #   BaseException —— 普通的 except Exception 抓不到它，于是任何做导入自检的
+    #   工具（scripts/import_check.py）都会被带崩并返回非零退出码（CI 就栽在这里）。
+    #   改成「记录错误、延迟到真正要建图时再报」：对直接运行脚本的人行为完全一致。
+    END = START = StateGraph = None  # type: ignore[assignment]
+    LANGGRAPH_ERROR = _exc
 
 
 # ============================================================================
@@ -304,6 +310,10 @@ def route_after_review(state: AgentState) -> str:
 # ============================================================================
 
 def build_graph():
+    # 依赖缺失在这里才报错（而不是在模块顶层 sys.exit），保证本模块始终可被导入：
+    # 直接运行脚本时，用户看到的提示与退出码与以前一致；而 import 自检不再被带崩。
+    if LANGGRAPH_ERROR is not None:
+        raise SystemExit("[FATAL] 没有找到 langgraph，请先安装：pip install langgraph")
     builder = StateGraph(AgentState)
 
     builder.add_node("retriever", retriever_node)   # Agent 1

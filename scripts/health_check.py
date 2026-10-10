@@ -410,7 +410,9 @@ SMOKE_CASES: tuple[tuple[str, str, tuple[str, ...], int, tuple[int, ...]], ...] 
     #   agent_tool_demo 1=未发生工具调用（缺 ZHIPU_API_KEY 时也走这里）
     #   MCP 客户端/探针 1/2/3=缺 Key 或 SDK、4=协议层真的失败了
     ("src/rag_demo.py --help", "src/rag_demo.py", ("--help",), 60, ()),
-    ("src/multi_agent_demo.py", "src/multi_agent_demo.py", (), 120, ()),
+    # multi_agent_demo 缺 langgraph 时会打印 [FATAL] 并以 1 退出 —— 属缺依赖，
+    # 记 WARN 而不是 FAIL（自检不把「本机缺件」当成代码坏了）。
+    ("src/multi_agent_demo.py", "src/multi_agent_demo.py", (), 120, (1,)),
     ("src/core/router.py --help", "src/core/router.py", ("--help",), 60, (1,)),
     ("src/core/query_student.py 2", "src/core/query_student.py", ("2",), 60, (1, 2, 3)),
     ("src/core/agent_tool_demo.py --help", "src/core/agent_tool_demo.py", ("--help",), 60, (1, 2)),
