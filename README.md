@@ -1,5 +1,7 @@
 # AI-Agent-Harness
 
+[English](README_EN.md) | 简体中文
+
 **可运行的高可用 RAG + MCP Agent 底座**（含 44 组实测截图与排错复盘）
 
 [![CI](https://github.com/yrd-go/AI-Agent-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/yrd-go/AI-Agent-Harness/actions/workflows/ci.yml)
@@ -12,6 +14,24 @@
 > 公网 Demo 没有本机 Ollama 与 MongoDB，模块 ③/⑤ 会走**明确的 mock 标注**而不是真实数据；
 > 降级链路的真实效果请按下方「实测数据」在本地复现。
 
+![统一 Web 控制台](docs/images/39-web-console-rag.png?raw=true)
+
+### 30 秒速览
+
+| | |
+|---|---|
+| **解决什么** | 大模型应用最容易在生产翻车的四个点：模型不可用、向量空间错配、**协议线污染**、**检索接口不可用** |
+| **最强证据** | 74 个自动化测试 + GitHub Actions 绿色；检索接口 401 时 **0.29 s** 降级出答案；MCP 协议故障**一条命令复现** |
+| **怎么跑** | `pip install -r requirements.txt` → 填 `.env` → `streamlit run streamlit_app.py`<br/>**零 Key 也能跑**：`python src/rag_demo.py "我的VPN坏了" --keyword-only` |
+| **深入了解** | [架构](#系统架构) · [实测数据](#实测数据含测量口径) · [已知限制](#已知限制) · [20 段排错复盘](docs/PITFALLS.md) |
+
+### 关键证据（截图）
+
+| | |
+|---|---|
+| **混合检索打分可视化**<br/>查询改写 + 双路召回 + IDF 加权明细<br/>![混合检索](docs/images/35-rag-query-rewrite-hybrid-search.png?raw=true) | **云端 API 故障 → 自动降级**<br/>智谱超时后切本地 Ollama（72 s 返回）<br/>![自动降级](docs/images/19-rag-auto-fallback-success.png?raw=true) |
+| **MCP 协议层排障**<br/>`initialize / tools-list / tools-call` 逐步可见<br/>![MCP 探针](docs/images/32-mcp-probe-tools-call.png?raw=true) | **多智能体 Agent Loop**<br/>条件边打回重试 + `give_up` 防死循环<br/>![多智能体](docs/images/29-multi-agent-loop.png?raw=true) |
+
 ---
 
 ## 目录
@@ -21,7 +41,7 @@
 - [系统架构](#系统架构)
 - [五个模块](#五个模块)
 - [实测数据（含测量口径）](#实测数据含测量口径)
-- [三个核心工程问题的处置](#三个核心工程问题的处置)
+- [四个核心工程问题的处置](#四个核心工程问题的处置)
 - [测试与自检](#测试与自检)
 - [已知限制](#已知限制)
 - [部署](#部署)
@@ -34,12 +54,13 @@
 
 ## 这个项目是什么 / 不是什么
 
-**是什么**：一个把「大模型应用最容易在生产里翻车的三个坑」逐个收敛成可复现、可验证处置的工程底座 ——
+**是什么**：一个把「大模型应用最容易在生产里翻车的四个坑」逐个收敛成可复现、可验证处置的工程底座 ——
 **模型不可用**（生成阶段主备降级 + 快速失败）、**向量空间错配**（元数据一致性守卫 + 一条命令重建）、
-**协议线污染**（stdout/stderr 纪律 + 可复现故障的旁路探针）。附带一个把五个模块串起来的 Streamlit 控制台。
+**协议线污染**（stdout/stderr 纪律 + 可复现故障的旁路探针）、**检索接口不可用**（本地关键词召回兜底，零外部依赖）。
+附带一个把五个模块串起来的 Streamlit 控制台。
 
 **不是什么**：不是模型训练/微调项目，不是高并发生产系统。
-本仓库如实标注了[已知限制](#已知限制)——包括**检索侧尚未降级**、**无熔断/退避**、**无 RAG 量化评测**。
+本仓库如实标注了[已知限制](#已知限制)——包括**检索兜底只有关键词级精度**、**无熔断/退避**、**尚无 RAG 量化评测**。
 这些是下一步计划，而不是已经完成的能力。
 
 技术栈：Python 3.10+ · LangChain / LangGraph · Chroma · MCP（stdio）· 智谱 GLM-4-Flash · 本地 Ollama · Streamlit · Docker
@@ -271,7 +292,6 @@ CI：`.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上跑单元测试 + 导�
 6. **Docker 镜像内没有 Ollama**：容器里 `OLLAMA_BASE_URL` 默认指向 `localhost:11434`，也就是容器自己 —— 想在容器里演示降级，需要另起 Ollama 容器并改 `OLLAMA_BASE_URL`。
 7. **MCP 探针未断言控制帧**：`initialized` 通知、`ping`、`progress`、`cancellation` 等尚未逐项断言，只覆盖客户端三步主链路。
 8. **公网 Demo 的模块 ③/⑤ 在无 MongoDB 时走 mock**：会明确标注 `[mock]` 且页面提示「这是演示数据」，需要真实数据请配置 `MONGO_URI`（推荐 MongoDB Atlas）并把 `STUDENT_ALLOW_MOCK=false` 切到严格模式。
-9. **英文版 README_EN.md 尚未同步本轮改动**（命令仍是旧目录结构）。
 
 ---
 
@@ -309,7 +329,8 @@ docker run --rm -p 8501:8501 \
 AI-Agent-Harness/
 ├─ streamlit_app.py            # ★ 部署入口（Streamlit Cloud 的 Main file path 填它）
 ├─ requirements.txt
-├─ README.md                   # 本文件
+├─ README.md                   # 本文件（中文）
+├─ README_EN.md                # 英文版（结构与中文版对齐）
 ├─ LICENSE                     # MIT
 ├─ DEPLOY.md                   # 云端部署与报错对照表
 ├─ DEPLOY_STRUCTURE.md         # 目录重构说明与命令对照
@@ -329,9 +350,15 @@ AI-Agent-Harness/
 ├─ docs/
 │  ├─ PITFALLS.md              # ★ 20 段踩坑与排错复盘
 │  └─ images/                  # ★ 44 张实测截图（01~44）
-├─ tests/                      # 52 个纯标准库用例 + fixtures
+├─ tests/                      # 74 个纯标准库用例 + fixtures
 └─ scripts/                    # 自检、导入检查、legacy JS 脚本
 ```
+
+> **`AGENTS.md` 是什么**：本项目的 **AI 协作规范（元规则层）** —— 只写全局底线
+> （先出计划再动手、密钥只走环境变量、禁止直接执行破坏性操作），具体技术约束放在每次任务的
+> Prompt 里。把「元规则」与「任务规则」分开，是为了避免上下文污染导致指令遵循率下降
+> （复盘见 [docs/PITFALLS.md 第 8 节](docs/PITFALLS.md)）。它是本仓库
+> 「AI 生成 + 人类审查」工作流的一部分：**AI 负责写，人负责审查、决策与验收**。
 
 ---
 
@@ -362,13 +389,14 @@ AI-Agent-Harness/
 
 ## 后续规划
 
-- [ ] **检索侧降级**：Embedding 接口不可用时自动切本地向量或已建索引（当前最大缺口）
+- [ ] **检索兜底升级到「向量级」**：现在降级到关键词召回（零依赖但精度弱于向量）；下一步做本地 embedding 兜底 / 缓存向量
 - [ ] 容错链路补全：指数退避 + 抖动 + 熔断 + 总时间预算 + 幂等 `request_id`
 - [ ] RAG 评测集与指标：`hit@k` / `MRR` / 答案命中率 / Token 成本，做成一条命令出对比表
 - [ ] 多智能体接入真实向量库与 LLM 评审，输出「第 1 轮 vs 第 2 轮」召回提升
 - [ ] MCP 探针补控制帧断言（`initialized` / `ping` / `progress` / `cancellation`）
 - [ ] CI 增加可选的全量依赖任务（跑 MCP 端到端负向用例）
-- [ ] 同步 `README_EN.md`，并补 `docker-compose.yml`（app + ollama，让容器内降级可用）
+- [ ] 补 `docker-compose.yml`（app + ollama，让容器内的降级链路真正可用）
+- [ ] `README_EN.md` 与中文版持续同步（本轮已同步一次）
 
 ---
 

@@ -1,162 +1,433 @@
-# My-Agent-Debugger (Agent Toolchain Troubleshooting & Hybrid Workflow Field Notes)
+# AI-Agent-Harness
 
-## 💡 Background
+English | [简体中文](README.md)
 
-This project is a field record of a software engineering student putting an **AI agent into real production use**. While assembling a local toolchain on top of DeepSeek Harness, I ran into genuine engineering friction: sandbox isolation, LLM code hallucination, and Windows encoding conflicts.
+**A runnable, high-availability RAG + MCP agent foundation** — with 44 measured screenshots and 20 post-mortems.
 
-By analyzing agent traces, running multi-model A/B comparisons, and adopting a **"generation/execution decoupling"** hybrid workflow, I eventually closed the loop from Node.js all the way to a working Python database query.
+[![CI](https://github.com/yrd-go/AI-Agent-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/yrd-go/AI-Agent-Harness/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
+![MCP](https://img.shields.io/badge/MCP-stdio-green)
 
-This repository documents the complete diagnostic reasoning, comparison screenshots, and code evolution. The goal is to share a practical pattern for the AI era: **AI-assisted generation combined with human engineering review**.
+Live demo (Streamlit): <https://ai-agent-harness-edjmumadkd9e3lqsmtf3ff.streamlit.app>
 
-> **TL;DR** — Use a strong reasoning model on the critical path. Let the agent write code, but keep execution behind a human-verified boundary. When an agent and a database fail to talk, suspect the character set before you suspect the logic.
+> The public demo has no local Ollama and no MongoDB, so modules ③/⑤ run on **explicitly labelled
+> mock data**; reproduce the real fallback behaviour locally with the commands below.
 
-## 🚀 Quick Start & Reproduction Guide
+![Web console](docs/images/39-web-console-rag.png?raw=true)
 
-### Prerequisites
+### 30-second overview
 
-* Node.js >= 22.5.0 (native `node:sqlite` support)
-* Python >= 3.10
-* API keys for the relevant models (DeepSeek / Zhipu GLM, etc.)
-* The `test.db` database in this repository is generated automatically by `init_db.js` — run the initialization step first.
+| | |
+|---|---|
+| **What it solves** | The four things that break LLM apps in production: model unavailability, vector-space mismatch, **protocol-line pollution**, **embedding endpoint unavailability** |
+| **Strongest evidence** | 74 automated tests + green CI; retrieval degrades and answers in **0.29 s** on a 401; MCP protocol failures are **reproducible with one command** |
+| **Run it** | `pip install -r requirements.txt` → fill `.env` → `streamlit run streamlit_app.py`<br/>**No API key needed**: `python src/rag_demo.py "my VPN is broken" --keyword-only` |
+| **Go deeper** | [Architecture](#architecture) · [Measured data](#measured-data) · [Known limitations](#known-limitations) · [20 post-mortems](docs/PITFALLS.md) |
 
-### Running the Demo Scripts
+### Key evidence (screenshots)
 
-1. **Node.js version (database initialization and query):**
+| | |
+|---|---|
+| **Hybrid retrieval scoring**<br/>query rewrite + dual recall + IDF breakdown<br/>![Hybrid search](docs/images/35-rag-query-rewrite-hybrid-search.png?raw=true) | **Cloud API failure → automatic fallback**<br/>Zhipu times out, local Ollama answers (72 s)<br/>![Auto fallback](docs/images/19-rag-auto-fallback-success.png?raw=true) |
+| **MCP protocol debugging**<br/>`initialize / tools-list / tools-call` step by step<br/>![MCP probe](docs/images/32-mcp-probe-tools-call.png?raw=true) | **Multi-agent loop**<br/>conditional-edge retry + `give_up` guard<br/>![Multi-agent](docs/images/29-multi-agent-loop.png?raw=true) |
 
-   ```bash
-   node init_db.js
-   node query_student.js 2
-   ```
+---
 
-2. **Python version (argument validation and exception handling):**
+## Contents
 
-   ```bash
-   python query_student.py 2
-   python query_student.py abc
-   python query_student.py
-   ```
+- [What this is / is not](#what-this-is--is-not)
+- [Quick start](#quick-start)
+- [Architecture](#architecture)
+- [The five modules](#the-five-modules)
+- [Measured data](#measured-data)
+- [Four core engineering problems](#four-core-engineering-problems)
+- [Tests and self-check](#tests-and-self-check)
+- [Known limitations](#known-limitations)
+- [Deployment](#deployment)
+- [Project layout](#project-layout)
+- [Security conventions](#security-conventions)
+- [Post-mortems (20)](docs/PITFALLS.md)
+- [Roadmap](#roadmap)
 
-*Note: the repository root contains mixed Node.js and Python verification scripts, corresponding to different stages of the troubleshooting experiments.*
+---
 
-## 🔍 Field Notes: Pitfalls and Resolutions
+## What this is / is not
 
-### 1. Sandbox Environment Restrictions and Tool Refactoring
+**What it is**: an engineering foundation that turns the four most common production failure modes of
+LLM applications into reproducible, verifiable mitigations — **model unavailability** (dual-engine
+generation fallback + fail-fast), **vector-space mismatch** (metadata consistency guard + one-command
+rebuild), **protocol-line pollution** (stdout/stderr discipline + a probe that reproduces the fault),
+and **retrieval endpoint unavailability** (local keyword-recall fallback with zero external
+dependencies). Plus a Streamlit console that wires the five modules together.
 
-* **Symptom**: The Harness sandbox blocked external invocation of the Python interpreter, failing with `file access denied`.
-* **Resolution**: Rather than fighting the sandbox, I worked with its security model and refactored the tool onto Node.js built-in modules — preserving both safety and execution efficiency.
+**What it is not**: not a model-training/fine-tuning project, and not a high-concurrency production
+system. The [known limitations](#known-limitations) are stated honestly — including that the retrieval
+fallback is keyword-level (less precise than vector recall), that there is no retry/backoff/circuit
+breaker, and that there is no quantitative RAG evaluation yet. Those are the roadmap, not claims.
 
-  ![Sandbox denial](01-sandbox-denied.png?raw=true)
+Stack: Python 3.10+ · LangChain / LangGraph · Chroma · MCP (stdio) · Zhipu GLM-4-Flash · local Ollama · Streamlit · Docker
 
-### 2. Lightweight-Model Code Hallucination and Failed Self-Correction
+---
 
-* **Symptom**: When generating a Node.js script, Zhipu GLM-4-Flash incorrectly applied object destructuring to a string (`const { id } = '1002'`). This silently turned the parameter into `undefined`, failed the task, and produced misleading output (a false "Not found").
-* **Symptom**: When asked to self-correct, the model could neither identify the logical error nor recover from a port conflict and sandbox-induced module isolation (`Cannot find module`) — it abandoned the task entirely.
-* **Resolution**: Reading the **trace log** pinpointed the corrupted parameter precisely. Swapping in DeepSeek ran the task successfully on the first attempt, establishing the policy that **a strong reasoning model is mandatory on the critical path**.
+## Quick start
 
-  ![Model hallucination](02-model-hallucination-trace.png?raw=true)
-  ![Self-correction failure](03-self-correction-failure.png?raw=true)
+```bash
+git clone https://github.com/yrd-go/AI-Agent-Harness.git
+cd AI-Agent-Harness
 
-### 3. Strong-Reasoning-Model Repair and Character-Set Debugging (IPC Encoding Troubleshooting)
+# 1) dependencies (3.11/3.12 recommended; chromadb may lack wheels on 3.14)
+python -m venv .venv
+source .venv/bin/activate           # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
-* **Symptom**: DeepSeek fixed the code precisely, but the first request returned mojibake (`aæ...`) caused by PowerShell's default decoding.
-* **Resolution**: The model independently diagnosed the root cause — the `Content-Type: text/plain` header did not declare a character set. It then added `charset=utf-8` and restarted the service, successfully returning "李四" (Li Si).
-* **Bonus**: On completion, the agent proactively issued `job_kill` to clean up the background process — demonstrating sound resource lifecycle management.
+# 2) configuration (.env is never committed; Streamlit Secrets also works)
+cp .env.example .env                # Windows: copy .env.example .env
+#    minimum: ZHIPU_API_KEY=sk-xxxx
+#    optional: MONGO_URI (local mongod or MongoDB Atlas) for real student data
 
-  ![DeepSeek success](04-deepseek-success-trace.png?raw=true)
-  ![Encoding fix](05-deepseek-fix-and-encoding.png?raw=true)
-  ![Charset success](06-charset-utf8-success.png?raw=true)
+# 3) start the console (same entry point locally and in the cloud)
+streamlit run streamlit_app.py
+#    open http://localhost:8501
+```
 
-**Why this class of bug is worth calling out:** an inter-process communication (IPC) boundary has *two* independent decoders — the producer's declared content type and the consumer's console codepage. The bytes on the wire were always valid UTF-8; the failure was entirely in metadata. Declaring `charset=utf-8` on the response is the durable fix, because it makes the contract explicit instead of relying on the client to guess.
+**Command line only** (no Streamlit required):
 
-### 4. External API Integration and Compliance Approval
+```bash
+python src/rag_demo.py "my VPN is broken"                # ① RAG: rewrite + hybrid retrieval + dual-engine generation
+python src/rag_demo.py "my VPN is broken" --no-rerank     #    baseline: pure vector retrieval
+python src/rag_demo.py --rebuild                         #    rebuild the vector store (required when switching embedder)
+python src/rag_demo.py "my VPN is broken" --keyword-only  #    zero-dependency: local keyword recall, no API key at all
+python src/rag_demo.py "my VPN is broken" --no-vec-fallback   #  A/B: disable retrieval fallback (fail fast)
+python src/multi_agent_demo.py                           # ② multi-agent: agent loop + infinite-loop guard
+python src/core/router.py "查学生2"                       # ③ router: local script / free translation API / DeepSeek
+python src/mcp_demo/mcp_protocol_probe.py                # ④ MCP probe: three-step protocol check
+python src/mcp_demo/mcp_protocol_probe.py --break-stdout  #    ★ negative mode: reproduce stdout pollution
+python src/core/agent_tool_demo.py                       # ⑤ function calling: ReAct loop
+```
 
-* **Symptom**: Building a GitHub issue-scraping script required translating English issue titles into Chinese.
-* **Resolution**: The agent strictly followed the rules in `AGENTS.md` — it output a plan and only wrote files after receiving human approval. It also recognized that Google Translate is unreliable behind the domestic network, and successfully integrated the free MyMemory translation API instead.
+> `.venv-rag/` is the environment name used by the author; scripts auto-detect both `.venv` and
+> `.venv-rag` and otherwise fall back to the current interpreter. Always run from the repository root —
+> no manual `PYTHONPATH` needed.
 
-  ![Plan approval](07-github-issues-plan-approval.png?raw=true)
-  ![External translation API](08-script-generation-summary.png?raw=true)
+---
 
-### 5. Database Dependency Risk and a Zero-Dependency Rewrite
+## Architecture
 
-* **Symptom**: To create the SQLite database, the agent initially planned to use `better-sqlite3` — a native C++ module with a real risk of compilation failure on Windows.
-* **Resolution**: I intervened decisively and asked for a different approach. The agent immediately checked the Node version (v24.21.0) and switched to the built-in `node:sqlite` module. It went on to create the table, insert data, and query the student with `id=2` as "李四" — achieving a **zero-external-dependency deployment**.
+### ① RAG pipeline: decoupled retrieval/generation, fallback, vector-store consistency guard
 
-  ![Database selection](09-database-sqlite-setup.png?raw=true)
-  ![Execution and verification](10-sqlite-execution-and-verification.png?raw=true)
+```mermaid
+graph TD
+    Q[User question] --> RW{Query rewrite<br/>glm-4-flash}
+    RW -->|ok| HQ[rewritten query + keywords]
+    RW -->|failed / no key| OQ[original question + local tokenizer]
 
-### 6. Generation/Execution Decoupling (Closing the Hybrid Workflow Loop)
+    HQ --> VS[(Chroma vector store)]
+    OQ --> VS
+    VS -->|embedder metadata mismatch| GUARD[refuse retrieval<br/>print --rebuild command]
+    VS -->|top-K chunks| FUSE[hybrid scoring<br/>0.7*vector + 0.3*keyword]
+    VS -->|embedding endpoint down| KW[local keyword recall<br/>zero external deps]
 
-* **Symptom**: Because of Harness sandbox isolation, the agent could not directly invoke the local Python interpreter to run scripts. At the same time, the VS Code static checker flagged the built-in `sqlite3` and `os` modules with red squiggles, since it had not detected the local interpreter.
-* **Resolution**: I adopted a hybrid workflow that **decouples generation from execution**. The agent focused purely on generating code; I manually pulled that code into local VS Code and ran `python query_student.py` in the terminal, successfully printing `the student name for id 2 is: 李四`. This verified the correctness of the code logic while preserving the system's security boundary.
+    FUSE --> GEN[generation engine]
+    KW --> GEN
+    GEN -->|primary| ZP[Zhipu GLM-4-Flash]
+    ZP -->|timeout / rate limit / auth error| FB{fallback}
+    FB -->|auto mode| OL[local Ollama Qwen2.5-3B]
+    FB -->|--engine zhipu / --no-fallback| FF[fail fast<br/>exit code 2]
+    ZP -->|ok| ANS[final answer]
+    OL -->|best effort| ANS
+```
 
-  ![Agent self-correction](11-agent-self-correction-trace.png?raw=true)
-  ![Local execution verification](12-local-execution-verification.png?raw=true)
+### ② MCP cross-process tool calling + bypass probe (negative mode included)
 
-**The trade-off, stated plainly:** decoupling costs one manual copy-and-run step, and in exchange the agent never gains arbitrary code execution on my machine. For a toolchain that an LLM is actively writing, that is the right side of the trade.
+```mermaid
+graph LR
+    LC[LangChain client] -->|MCPAdapter| SRV
+    PR[bypass probe<br/>mcp_protocol_probe.py] -->|initialize / tools-list / tools-call| SRV
+    PR -.->|--break-stdout<br/>MCP_POLLUTE_STDOUT=1| SRV
+    SRV[MCP server subprocess<br/>stdio transport] --> TOOL[get_current_weather]
+    SRV -->|stdout = protocol line| LC
+    SRV -->|logging to stderr| LOG[logs<br/>never pollute the wire]
+    PR -->|protocol failure| DIAG[structured diagnosis + exit code 4]
+```
 
-### 7. Boundary Testing and a Closed Argument-Validation Loop
+### ③ Multi-agent agent loop (LangGraph state graph)
 
-* **Symptom**: To make the script genuinely usable, I asked the agent to add command-line argument validation to `query_student.py`, including friendly error messages.
-* **Resolution**: The agent independently introduced `sys.argv` and a `parse_id` function, then proactively ran four boundary tests (invalid ID, normal query, non-numeric input, no argument). All four passed — confirming that the engineering standards I set in `AGENTS.md` (approval before execution, parameterized queries against SQL injection) were fully enforced.
+```mermaid
+graph TD
+    START --> R[Retriever agent]
+    R --> V[Reviewer agent]
+    V -->|conditional edge: retry<br/>max 2| R
+    V -->|approved| END1[END]
+    V -->|give_up<br/>infinite-loop guard| END2[safe exit]
+```
 
-  ![Argument validation loop](13-param-validation-success.png?raw=true)
+### ④ Multi-model routing (send each task to the cheapest adequate tier)
 
-### 8. Context Engineering Retrospective (Decoupling Meta-Rules from Task-Rules)
+```mermaid
+graph LR
+    I[natural-language instruction] --> M{keyword match<br/>order = priority}
+    M -->|student lookup| A[local script<br/>zero cost]
+    M -->|translation| B[free MyMemory API<br/>zero cost]
+    M -->|code generation| C[DeepSeek<br/>paid]
+    M -->|no match| D[print usage<br/>exit code 1]
+```
 
-* **Retrospective**: I originally wrote code-specific constraints directly into `AGENTS.md` (for example, "accept parameters via `sys.argv`"). This caused context pollution and hallucination when the AI later moved on to cross-domain tasks.
-* **Resolution**: I restructured the system into a **"meta-rules + task-rules"** separation. `AGENTS.md` now holds only global safety and interaction baselines (such as "ask before acting"), while concrete technical constraints live in each conversation's user prompt. This keeps the system context clean and substantially improves the model's instruction-following accuracy.
+---
 
-**Rule of thumb:** anything that is true for *every* task belongs in `AGENTS.md`; anything true for *this* task belongs in the prompt. Mixing the two is how a global rule file turns into a hallucination source.
+## The five modules
 
-### 9. Multi-Language Adaptive Translation Routing
+| # | Module | Entry point | Requires | API key |
+|---|---|---|---|---|
+| ① | RAG QA (rewrite + hybrid retrieval + fallback) | `src/rag_demo.py` | vector store `data/chroma_db/` (committed) | yes (Zhipu) or fully offline (Ollama) |
+| ② | Multi-agent collaboration + infinite-loop guard | `src/multi_agent_demo.py` | `langgraph` | no (deterministic demo) |
+| ③ | Multi-model routing | `src/core/router.py` | — | only the code-generation route (DeepSeek) |
+| ④ | MCP protocol probe (reproducible negative case) | `src/mcp_demo/mcp_protocol_probe.py` | `mcp>=2` | no |
+| ⑤ | Function calling (ReAct + tool wrapper) | `src/core/agent_tool_demo.py` | MongoDB (optional; mocks by default) | yes (Zhipu) |
 
-* **Symptom**: The original translation router hard-coded `hello` and supported only Chinese-English translation, leaving long-tail needs such as Japanese, Korean, and Russian unhandled.
-* **Resolution**:
-  1. Replaced `re.search` with `re.finditer` to strip suffixes like "to Japanese" / "to Russian" precisely, avoiding false positives on complex phrasing (for example, "the content translated to Japanese").
-  2. Built a `LANG_NAME_TO_CODE` mapping table that tolerates synonyms such as "Japanese / Japanese-language / Chinese".
-  3. Implemented **adaptive bidirectional translation** (Chinese ↔ English) plus **directed multi-language routing** (Chinese → Japanese / Russian / Korean).
-  4. Added **same-language protection** (short-circuiting when source language equals target language, so no useless request is sent) and empty-content boundary handling.
-  5. Ran seven real test cases in local VS Code (including empty input, mixed Chinese-English, and multi-language cases) — all passed.
+Unified web console: all five modules run from the page, with adjustable timeout / engine / retrieval
+parameters and UTF-8-captured output.
 
-  ![Multi-language router verification](14-multi-language-router-final.png?raw=true)
+---
 
-### 10. Smooth Database Evolution (SQLite → MongoDB)
+## Measured data
 
-* **Symptom**: As the agent toolchain grew more complex, it needed to store dynamic JSON structures and unstructured logs. The rigid table schemas of relational databases (SQLite / MySQL) became cumbersome.
-* **Resolution**: I led a database selection change, migrating from SQLite to the document-oriented **MongoDB**:
-  1. Rewrote `init_db.py` and `query_student.py` using the `pymongo` library.
-  2. Read connection details strictly from the `MONGO_URI` environment variable — no hard-coding.
-  3. Stored data as JSON documents (`{"id": 1, "name": "张三"}`), matching the mutable nature of AI-domain data structures.
-  4. Ran it for real in local VS Code: created the database, inserted three records, and precisely queried "李四" for `id=2`.
+**Environment**: Windows laptop · 16 GB RAM · **CPU-only inference** (no GPU) · local models
+`qwen2.5:3b` + `nomic-embed-text` · cloud models `glm-4-flash` / `embedding-3`
+**Caveat**: these are **single-run measurements** (screenshots in [docs/PITFALLS.md](docs/PITFALLS.md)),
+**not averages**, and there is no statistical significance testing. Network and server load move these
+numbers a lot.
 
-  ![MongoDB migration success](15-mongodb-migration-success.png?raw=true)
+| Scenario | Command | Measured | Notes |
+|---|---|---|---|
+| Zhipu generation | `python src/rag_demo.py "..."` | 20.1 s | primary engine healthy |
+| Auto-fallback to local Ollama | after a Zhipu timeout | 71.1 s / 72 s | availability over speed |
+| Fully offline chain | `--engine ollama --embedder ollama` | 47.8 s | never leaves the machine |
+| Vector store rebuild | `--embedder ollama --rebuild` | 73.8 s (181 chunks) / 6.2 s (362 chunks, Zhipu) | depends on embedder and chunk count |
+| Local vector retrieval | top-K recall | 0.06 s | retrieval is fast; generation is the bottleneck |
+| Local model memory peak | loading `qwen2.5:3b` | **11.4 GB** (16 GB machine) | CPU only 11% → memory-bound, not compute-bound |
+| **Retrieval fallback** (401 → local keyword recall) | invalid key to force auth failure | **0.29 s** | zero external deps; top-4 were all VPN entries (Q2-01/04/05/03) |
 
-## 🚀 Key Takeaways
+**Conclusion**: the local fallback is an **availability** measure, not a performance one. Running a 3B
+model as the degraded engine assumes 12 GB+ of free memory.
 
-1. Gained a working method for locating AI tool-call failures through **trace analysis** rather than guessing at prompts.
-2. Experienced and understood why local sandbox isolation and the file-system observation policy (`FS_NOT_OBSERVED`) matter for agent safety.
-3. Mastered the **"AI generation + local IDE verification"** hybrid workflow, achieving safe decoupling of generation from execution.
-4. Developed the practical ability to perform **engineering review of AI-generated code** — SQL injection prevention, resource release, and exception handling.
+---
 
-## 🧭 Design Principles Behind the Pitfalls
+## Four core engineering problems
 
-| Principle | Concrete manifestation in this repo |
-| --- | --- |
-| **Multi-Model Routing** | GLM-4-Flash failed on the critical path (string destructuring hallucination); DeepSeek fixed it on the first attempt. Lightweight models can handle peripheral work, but the critical path requires a strong reasoning model. |
-| **Environment Decoupling** | The sandbox denies local interpreter invocation. The agent generates; the human executes in local VS Code. Capability gained without granting arbitrary code execution. |
-| **IPC Encoding Troubleshooting** | Mojibake traced to an undeclared charset on `Content-Type: text/plain`, fixed with `charset=utf-8` plus a service restart. Always make the encoding contract explicit at the boundary. |
-| **Meta-Rules vs. Task-Rules** | `AGENTS.md` holds only global safety and interaction baselines; task-specific constraints stay in the prompt. Separation keeps context clean and raises instruction-following accuracy. |
-| **Zero-Dependency Bias** | Choosing `node:sqlite` over `better-sqlite3` removed a native C++ compilation risk on Windows in one decision. |
+### 1. Model unavailable → dual-engine generation fallback + fail-fast
 
-## 💻 Tech Stack
+- `auto` mode: switch to local Ollama as soon as the primary engine fails (`src/rag_demo.py`);
+- explicit `max_retries=0`: **no internal retries**, so fallback happens in seconds instead of hanging;
+- `--engine zhipu` / `--no-fallback`: fail loudly rather than degrade silently, with exit codes
+  (2 = primary unavailable / 3 = both unavailable) so scripts and CI can assert on them.
 
-* Python (AI-assisted generation and debugging)
-* Node.js (built-in module development)
-* LLM APIs (DeepSeek / GLM-4-Flash)
-* MongoDB / SQLite (`node:sqlite`, `pymongo`)
+### 2. Vector-space mismatch → metadata guard + one-command rebuild
 
-## 📈 Roadmap
+Writing embeddings from different models (Zhipu 2048-dim / Ollama 768-dim) into one collection makes
+retrieval silently return nonsense. Mitigation: store the `embedder` in the collection metadata and
+compare it before querying; on mismatch, **refuse to retrieve** and print the exact rebuild command.
 
-- [ ] Automatically capture error stacks across languages (Node.js, Python).
-- [ ] Implement **multi-model routing**: route simple errors to a lightweight model and complex failures to a strong model, optimizing cost without sacrificing success rate.
-- [ ] Extend the generation/execution decoupling boundary with a reviewer step that diffs agent output before it reaches local execution.
+```bash
+python src/rag_demo.py --embedder zhipu  --rebuild   # switch to cloud vectors
+python src/rag_demo.py --embedder ollama --rebuild   # switch to local vectors
+```
+
+### 3. Protocol-line pollution → stdout/stderr discipline + a probe that reproduces it
+
+With stdio transport, **stdout is the JSON-RPC wire**: any `print()` in the server corrupts the frames,
+which shows up as "handshake hangs / client cannot parse". Mitigation: all server logging goes to
+`stderr`, plus a bypass probe that **reproduces the fault on demand** instead of guesswork.
+
+```bash
+python src/mcp_demo/mcp_protocol_probe.py                 # healthy: three steps green, exit 0
+python src/mcp_demo/mcp_protocol_probe.py --break-stdout  # negative: reproduce + diagnose, exit 4
+```
+
+Probe exit codes: `0` ok · `1` bad args/path · `2` mcp SDK missing · `3` environment limit · `4` protocol failure.
+
+### 4. Retrieval unavailable → local keyword-recall fallback (zero external dependencies)
+
+The fallback above only covers **generation**; **retrieval** depends on the cloud embedding endpoint,
+and when it times out / rate-limits / the key expires the whole QA path used to fail. Now it degrades to
+**local keyword recall**: read every chunk straight from `chromadb` (**no embeddings needed**) and rank
+with local IDF scoring (including `tf` and a length penalty), printing an explicit degradation banner so
+keyword results are never passed off as vector results.
+
+```bash
+python src/rag_demo.py "my VPN is broken"                 # automatic fallback (on by default)
+python src/rag_demo.py "my VPN is broken" --no-vec-fallback  # A/B: disable fallback, fail fast
+python src/rag_demo.py "my VPN is broken" --keyword-only     # zero-dependency: skip vector store entirely
+```
+
+Measured (invalid key forcing a 401): **0.29 s** to answer, top-4 all VPN entries (Q2-01 install /
+Q2-04 slow & disconnects / Q2-05 error 691 / Q2-03 intranet access), no external dependency at all.
+The debugging story (the fallback initially never triggered, and the ranking degenerated to "all scores
+are 1.0") is in [docs/PITFALLS.md §20](docs/PITFALLS.md).
+
+---
+
+## Tests and self-check
+
+```bash
+python -m unittest discover -s tests -v   # pure-stdlib unit tests (no third-party deps needed)
+python tests/run_all.py                   # same suite as a script (for environments where -m is blocked)
+python scripts/import_check.py            # cross-directory imports + path constants
+python scripts/health_check.py            # full self-check: layout / hardcoded paths / imports / smoke
+```
+
+Coverage (74 tests):
+
+| File | Regression it prevents |
+|---|---|
+| `tests/test_paths.py` | project root silently pointing at the wrong directory; credential masking broken; stale `__all__` |
+| `tests/test_router.py` | keyword routing and "to Russian"-style parsing broken |
+| `tests/test_rag_scoring.py` | keyword weights, IDF scoring, dual-recall merge, fusion formula and ordering |
+| `tests/test_security_masking.py` | credentials leaking into the public web page (source-level assertions) |
+| `tests/test_probe_contract.py` | the probe degenerating into a happy-path-only script |
+| `tests/test_import_safety.py` | a module calling `sys.exit` at import time (this once broke the import self-check and CI) |
+| `tests/test_retrieval_fallback.py` | retrieval fallback being bypassed (`die()` raises `SystemExit`, not `Exception`); keyword scores collapsing to all-1.0 |
+
+CI: `.github/workflows/ci.yml` runs the unit tests and the import self-check on Python 3.10 and 3.12.
+
+**Three-state self-check semantics** (to avoid false-green): exit code 0 = pass; a non-zero code with a
+declared business meaning (e.g. `query_student` returning `1` = "mock data") = **WARN, not counted as
+healthy**; any undeclared non-zero code = FAIL. Missing third-party dependencies are reported as
+"skipped, unverified" rather than silently passing.
+
+---
+
+## Known limitations
+
+An honest list — these are **not done yet**, do not read them as capabilities:
+
+1. **The retrieval fallback is keyword-level, not vector-level**: it works with zero external deps (401
+   and timeout both verified), but tokenization + IDF is weaker than vector recall. A true "vector
+   fallback" (local embeddings or cached vectors) is not implemented, and there is no quantitative
+   before/after comparison yet (see item 4).
+2. **No retry / jitter / circuit breaker / time budget**: what exists is one primary-to-backup switch
+   plus fail-fast, not a complete resilience chain.
+3. **The multi-agent module is a deterministic demo**: an in-repo mini knowledge base plus rule-based
+   review, used to explain state transitions and the give-up guard; it is not wired to a real vector
+   store or an LLM reviewer.
+4. **No quantitative RAG evaluation**: `hit@k` / `MRR` / answer accuracy / token cost are not yet
+   scripted; the [measured data](#measured-data) are single-run numbers, not benchmark metrics.
+5. **End-to-end tests are environment-limited**: CI runs pure-stdlib unit tests and the import
+   self-check; the MCP end-to-end cases are **explicitly SKIPPED** in sandboxes that forbid child
+   process pipes.
+6. **The Docker image has no Ollama**: inside the container `OLLAMA_BASE_URL` defaults to
+   `localhost:11434`, i.e. the container itself — to demo fallback in Docker, run Ollama separately and
+   set `OLLAMA_BASE_URL`.
+7. **The MCP probe does not assert control frames**: `initialized` notifications, `ping`, `progress`
+   and `cancellation` are not asserted yet; only the three-step client main path is covered.
+8. **Modules ③/⑤ use mock data on the public demo when MongoDB is absent**: clearly labelled `[mock]`;
+   configure `MONGO_URI` (Atlas recommended) and set `STUDENT_ALLOW_MOCK=false` for real data.
+
+---
+
+## Deployment
+
+### Streamlit Cloud (primary path)
+
+1. Push the repository → <https://share.streamlit.io> → **New app**;
+2. **Main file path must be `streamlit_app.py`** (not `src/ui/dashboard.py`);
+3. Python 3.12 recommended;
+4. `Settings → Secrets`: add `ZHIPU_API_KEY`, plus `MONGO_URI` / `MONGO_DB` / `MONGO_COLLECTION` for real data;
+5. **Reboot app** after saving.
+
+See [DEPLOY.md](DEPLOY.md) for the troubleshooting table and [DEPLOY_STRUCTURE.md](DEPLOY_STRUCTURE.md)
+for the layout/command mapping.
+
+### Self-hosted container
+
+```bash
+docker build -t ai-agent-harness .
+docker run --rm -p 8501:8501 \
+  -e ZHIPU_API_KEY="sk-xxxx" \
+  -e MONGO_URI="mongodb://host.docker.internal:27017/" \
+  ai-agent-harness
+# open http://localhost:8501
+```
+
+The image is based on `python:3.12-slim`; secrets are injected via `-e` / `--env-file` only, and
+`.dockerignore` excludes `.env` and `secrets.toml`. ⚠️ The image contains no Ollama (limitation 6).
+
+---
+
+## Project layout
+
+```
+AI-Agent-Harness/
+├─ streamlit_app.py            # deployment entry point (Streamlit Cloud "Main file path")
+├─ requirements.txt
+├─ README.md / README_EN.md    # Chinese / English documentation
+├─ LICENSE                     # MIT
+├─ DEPLOY.md                   # cloud deployment + error lookup table
+├─ DEPLOY_STRUCTURE.md         # directory refactor notes and command mapping
+├─ Dockerfile / .dockerignore
+├─ AGENTS.md                   # AI collaboration rules (meta-level: plan first, secrets via env only)
+├─ .github/workflows/ci.yml    # CI: unit tests + import self-check
+├─ src/
+│  ├─ paths.py                 # ★ single source of truth for paths/env (incl. mask_uri / mask_secrets)
+│  ├─ rag_demo.py              # ① RAG: rewrite + hybrid retrieval + dual-engine fallback
+│  ├─ multi_agent_demo.py      # ② multi-agent: LangGraph state graph + infinite-loop guard
+│  ├─ core/                    # ③ routing, ⑤ function calling, MongoDB tools
+│  ├─ mcp_demo/                # ④ MCP server / client / bypass probe
+│  └─ ui/dashboard.py          # Streamlit page implementation
+├─ data/
+│  ├─ knowledge_base.txt       # RAG knowledge base
+│  ├─ chroma_db/               # committed vector store (no cold-start rebuild in the cloud)
+│  └─ test.db                  # sample SQLite (legacy JS scripts)
+├─ docs/
+│  ├─ PITFALLS.md              # ★ 20 post-mortems
+│  └─ images/                  # ★ 44 measured screenshots (01–44)
+├─ tests/                      # 74 pure-stdlib tests + fixtures
+└─ scripts/                    # self-checks, import check, legacy JS scripts
+```
+
+---
+
+## Security conventions
+
+- `.env` and `.streamlit/secrets.toml` are gitignored and **never committed**;
+- secrets are read via `os.environ` only — **never printed, echoed or logged**;
+- when a connection string must be printed it **must** go through `paths.mask_uri()` (scheme / host /
+  database only):
+
+  ```python
+  from paths import mask_uri
+  print(f"[mock] MongoDB unreachable（{mask_uri(MONGO_URI)}), returning mock data.")
+  # mongodb+srv://***:***@cluster0.xxx.mongodb.net/?retryWrites=true
+  ```
+
+- the Streamlit page runs every child-process output through `paths.mask_secrets()` (connection strings,
+  `sk-` keys, `Bearer` tokens, `key=value`) because the page is **public**;
+- if a real-looking key ever appears in the repository, rotate it immediately.
+
+---
+
+## Post-mortems (20)
+
+From sandbox restrictions and model code hallucination to charset conflicts, vector-space clashes,
+fallback drills and MCP protocol-wire pollution — the full write-up plus 44 screenshots is in
+**[docs/PITFALLS.md](docs/PITFALLS.md)**.
+
+---
+
+## Roadmap
+
+- [ ] **Upgrade the retrieval fallback to vector level**: today it degrades to keyword recall (zero deps
+      but weaker than vectors); next is local-embedding or cached-vector fallback
+- [ ] Complete the resilience chain: exponential backoff + jitter + circuit breaker + time budget + idempotent `request_id`
+- [ ] RAG evaluation set and metrics: `hit@k` / `MRR` / answer accuracy / token cost as a single-command report
+- [ ] Wire the multi-agent module to a real vector store and an LLM reviewer (round-1 vs round-2 recall lift)
+- [ ] MCP probe: assert control frames (`initialized` / `ping` / `progress` / `cancellation`)
+- [ ] Optional full-dependency CI job (runs the MCP end-to-end negative case)
+- [ ] `docker-compose.yml` (app + ollama) so the fallback chain works inside containers
+- [ ] Keep `README_EN.md` in sync with the Chinese version (synced once so far)
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Rundong Yang

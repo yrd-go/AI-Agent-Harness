@@ -73,6 +73,71 @@ function Invoke-Git {
     }
 }
 
+function Show-NetworkHints {
+    Write-Host "`n  GitHub 连接失败（Connection was reset / 超时）的常见处理：" -ForegroundColor Yellow
+    Write-Host "    1) 先确认通路：Test-NetConnection github.com -Port 443 -InformationLevel Quiet"
+    Write-Host "       —— 输出 False 表示现在不通；换手机热点通常立刻可用"
+    Write-Host "    2) 让 git 走 HTTP/1.1（丢包网络下比 HTTP/2 稳得多）："
+    Write-Host "       git config --global http.version HTTP/1.1"
+    Write-Host "    3) 直接重跑本脚本：本地改动都已就绪，重跑是幂等的（不会重复提交）"
+    Write-Host "    4) 长期不通的兜底：在 GitHub 网页上手动替换这几个文件 ——"
+    Write-Host "       README.md / README_EN.md / DEPLOY_STRUCTURE.md /"
+    Write-Host "       scripts/health_check.py / scripts/publish_docs_to_github.ps1"
+}
+
+function Invoke-GitWithRetry {
+    # 网络类 git 操作（fetch / checkout / reset）带自动重试。
+    # 背景：国内访问 github.com 常见 "Recv failure: Connection was reset"，
+    # 属于间歇性抖动，重试几次基本都能过去。
+    param(
+        [string]$What,
+        [string[]]$GitArgs,
+        [int[]]$Delays = @(2, 5, 10)
+    )
+    $attempts = $Delays.Count + 1
+    for ($i = 1; $i -le $attempts; $i++) {
+        & git -C $WorkDir @GitArgs
+        $code = $LASTEXITCODE      # 立刻取值：中间夹了别的 cmdlet 之后 $LASTEXITCODE 可能已变
+        if ($code -eq 0) {
+            if ($i -gt 1) { Ok "$What：第 $i 次尝试成功" }
+            return $true
+        }
+        if ($i -lt $attempts) {
+            $wait = $Delays[$i - 1]
+            Warn "$What 第 $i 次失败（退出码 $code），$wait 秒后重试（共 $attempts 次尝试）…"
+            Start-Sleep -Seconds $wait
+        }
+    }
+    return $false
+}
+
+function Invoke-CloneWithRetry {
+    param(
+        [string]$Url,
+        [string]$Ref,
+        [string]$Dir,
+        [int[]]$Delays = @(2, 5, 10)
+    )
+    $attempts = $Delays.Count + 1
+    for ($i = 1; $i -le $attempts; $i++) {
+        & git clone --branch $Ref $Url $Dir
+        $code = $LASTEXITCODE      # 立刻取值：后面的 Test-Path / Remove-Item 可能影响 $LASTEXITCODE
+        if ($code -eq 0) {
+            if ($i -gt 1) { Ok "clone：第 $i 次尝试成功" }
+            return $true
+        }
+        if (Test-Path -LiteralPath $Dir) {
+            Remove-Item -LiteralPath $Dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($i -lt $attempts) {
+            $wait = $Delays[$i - 1]
+            Warn "clone 第 $i 次失败（退出码 $code），$wait 秒后重试（共 $attempts 次尝试）…"
+            Start-Sleep -Seconds $wait
+        }
+    }
+    return $false
+}
+
 # ---------------------------------------------------------------------------
 Step "0/6 环境与源目录检查"
 # ---------------------------------------------------------------------------
@@ -97,13 +162,18 @@ Step "1/6 准备仓库工作副本"
 # ---------------------------------------------------------------------------
 if (Test-Path -LiteralPath (Join-Path $WorkDir ".git")) {
     Ok "复用已有工作副本：$WorkDir"
-    Invoke-Git fetch origin $Branch
+    if (-not (Invoke-GitWithRetry -What "fetch origin $Branch" -GitArgs @("fetch", "origin", $Branch))) {
+        Show-NetworkHints
+        Die "fetch 失败（重试 3 次仍不通）—— 本地改动没有任何损失，网络恢复后重跑本脚本即可"
+    }
     Invoke-Git checkout $Branch
     Invoke-Git reset --hard "origin/$Branch"
 } else {
     if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
-    & git clone --branch $Branch $RepoUrl $WorkDir
-    if ($LASTEXITCODE -ne 0) { Die "clone 失败：$RepoUrl（检查网络与仓库权限）" }
+    if (-not (Invoke-CloneWithRetry -Url $RepoUrl -Ref $Branch -Dir $WorkDir)) {
+        Show-NetworkHints
+        Die "clone 失败（重试 3 次仍不通）：$RepoUrl"
+    }
     Ok "已 clone 到：$WorkDir"
 }
 
@@ -135,8 +205,8 @@ if ($rootPngs.Count -eq 0) {
 Step "3/6 用本地改动覆盖仓库文件"
 # ---------------------------------------------------------------------------
 $files = @(
-    "README.md", "LICENSE", "requirements.txt", "DEPLOY.md", "DEPLOY_STRUCTURE.md",
-    ".gitignore", ".gitattributes", "streamlit_app.py", "Dockerfile"
+    "README.md", "README_EN.md", "LICENSE", "requirements.txt", "DEPLOY.md",
+    "DEPLOY_STRUCTURE.md", ".gitignore", ".gitattributes", "streamlit_app.py", "Dockerfile"
 )
 foreach ($f in $files) {
     $src = Join-Path $SourceDir $f
@@ -206,9 +276,21 @@ Step "6/6 推送"
 # ---------------------------------------------------------------------------
 & git -C $WorkDir push origin $Branch
 if ($LASTEXITCODE -ne 0) {
-    Warn "push 失败。常见原因与处理："
+    Warn "push 第 1 次失败（退出码 $LASTEXITCODE），5 秒后重试 …"
+    Start-Sleep -Seconds 5
+    & git -C $WorkDir push origin $Branch
+}
+if ($LASTEXITCODE -ne 0) {
+    Warn "push 第 2 次仍失败（退出码 $LASTEXITCODE），10 秒后最后重试一次 …"
+    Start-Sleep -Seconds 10
+    & git -C $WorkDir push origin $Branch
+}
+if ($LASTEXITCODE -ne 0) {
+    Warn "push 失败（已重试 3 次）。常见原因与处理："
+    Write-Host "    - 网络抖动：见下方提示（你的提交已在本地，重跑脚本即可继续推送）"
     Write-Host "    - 需要认证：用 Personal Access Token 当密码，或先配置 Git Credential Manager"
     Write-Host "    - 远端有他人提交：先 git -C `"$WorkDir`" pull --rebase origin $Branch 再 push"
+    Show-NetworkHints
     exit 1
 }
 Ok "推送成功"

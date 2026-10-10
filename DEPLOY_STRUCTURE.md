@@ -58,7 +58,7 @@ my-agent/
 │  └─ legacy/                  # 迁移前的 Dockerfile 等归档
 ├─ logs/                       # 日志与临时输出
 ├─ assets/samples/             # 示例文本
-└─ README_EN.md                # 英文说明：**只在远端维护**，本轮尚未同步（见 README 已知限制）
+└─ README_EN.md                # 英文说明（与中文版结构对齐，同样在本地维护）
 ```
 
 ## 三、命令对照表（旧 → 新）

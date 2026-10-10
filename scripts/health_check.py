@@ -100,6 +100,7 @@ EXPECTED_FILES = (
     "scripts/import_check.py",
     "scripts/legacy/Dockerfile.legacy",
     "README.md",
+    "README_EN.md",
     "LICENSE",
     "docs/PITFALLS.md",
     ".github/workflows/ci.yml",
@@ -108,10 +109,10 @@ EXPECTED_FILES = (
 TOLERATED_FILES = (".env", "router_output.png", "assets/samples/hello.txt")
 
 # 只在「远程仓库 / clone 出来的工作副本」里才要求存在、本地源码目录允许缺失的文件。
-# 背景：README.md 已改为「本地即改动源」，推送由 scripts/publish_docs_to_github.ps1
-# 完成，因此它进了 EXPECTED_FILES；只剩英文版 README_EN.md 仍在远端维护，
-# 它在本地缺失属预期行为，不算失败。
-CLONE_ONLY_FILES = ("README_EN.md",)
+# 现状：README.md 与 README_EN.md 都已改为「本地即改动源」（推送由
+# scripts/publish_docs_to_github.ps1 完成），因此这里已没有 clone-only 文件；
+# 保留该机制是为了以后真有「只在远端维护」的文件时可以直接用。
+CLONE_ONLY_FILES: tuple[str, ...] = ()
 
 # 硬编码路径检测规则：(正则/子串, 说明)
 HARDCODE_PATTERNS = (
@@ -188,12 +189,15 @@ def check_layout() -> None:
            "存在: " + (", ".join(kept) or "无"))
 
     # clone-only 文件：本地源码目录允许缺失，clone 出来的工作副本里应当存在
-    clone_only = [f for f in CLONE_ONLY_FILES if not (PROJECT_ROOT / f).is_file()]
-    if clone_only:
-        record("OK", f"{', '.join(clone_only)} 未在本地源码目录（预期行为）",
-               "这类文件只在 clone 出来的工作副本里维护；若当前是 clone 目录，请检查是否被误删。")
+    if not CLONE_ONLY_FILES:
+        record("OK", "无 clone-only 文件", "README 中英文都在本地维护，本地即改动源")
     else:
-        record("OK", f"{', '.join(CLONE_ONLY_FILES)} 存在（当前看起来是 clone 出来的工作副本）")
+        clone_only = [f for f in CLONE_ONLY_FILES if not (PROJECT_ROOT / f).is_file()]
+        if clone_only:
+            record("OK", f"{', '.join(clone_only)} 未在本地源码目录（预期行为）",
+                   "这类文件只在 clone 出来的工作副本里维护；若当前是 clone 目录，请检查是否被误删。")
+        else:
+            record("OK", f"{', '.join(CLONE_ONLY_FILES)} 存在（当前看起来是 clone 出来的工作副本）")
 
     # 旧路径残留检查
     leftovers = [p for p in ("web_demo", "chroma_db", "knowledge_base.txt", "test.db")
