@@ -1,0 +1,44 @@
+{"id": "e01", "chapter": 1, "question": "新同事第一天上班，电脑和邮箱都还没开通，要走什么流程？", "expect_ids": ["Q1-01"], "expect_lines": [[58, 80]]}
+{"id": "e02", "chapter": 1, "question": "公司的账号是怎么起名的？一共有哪几种账号？", "expect_ids": ["Q1-02"], "expect_lines": [[81, 103]]}
+{"id": "e03", "chapter": 1, "question": "密码输错几次之后提示账户已被锁定，怎么解开？", "expect_ids": ["Q1-03"], "expect_lines": [[104, 127]]}
+{"id": "e04", "chapter": 1, "question": "登录不上去，怎么区分是账号被锁了还是密码到期了？", "expect_ids": ["Q1-04"], "expect_lines": [[128, 150]]}
+{"id": "e05", "chapter": 1, "question": "我需要用一个以前没权限的系统，权限该走什么申请流程？", "expect_ids": ["Q1-05"], "expect_lines": [[151, 174]]}
+{"id": "e06", "chapter": 1, "question": "想在自己电脑上装点工具，需要管理员权限，怎么申请？", "expect_ids": ["Q1-06"], "expect_lines": [[175, 198]]}
+{"id": "e07", "chapter": 1, "question": "服务器、数据库这类特权账号，公司是怎么管的？", "expect_ids": ["Q1-08"], "expect_lines": [[221, 244]]}
+{"id": "e08", "chapter": 1, "question": "同事要离职或者转岗，他的账号需要做什么处理？", "expect_ids": ["Q1-10"], "expect_lines": [[270, 292]]}
+
+{"id": "e09", "chapter": 2, "question": "在家办公要连公司内网，客户端去哪下载、怎么装？", "expect_ids": ["Q2-01"], "expect_lines": [[358, 384]]}
+{"id": "e10", "chapter": 2, "question": "换了新手机，动态口令怎么重新绑定？", "expect_ids": ["Q2-02"], "expect_lines": [[385, 408]]}
+{"id": "e11", "chapter": 2, "question": "显示连上了，但内网的网页和共享盘都打不开，怎么排查？", "expect_ids": ["Q2-03"], "expect_lines": [[409, 435]]}
+{"id": "e12", "chapter": 2, "question": "连上之后网速特别慢、还老是断，从哪查起？", "expect_ids": ["Q2-04"], "expect_lines": [[436, 464]]}
+{"id": "e13", "chapter": 2, "question": "拨号的时候报 691，说用户名和密码组合无效", "expect_ids": ["Q2-05"], "expect_lines": [[465, 493]]}
+{"id": "e14", "chapter": 2, "question": "报错 809 和 812，隧道建不起来怎么办？", "expect_ids": ["Q2-06"], "expect_lines": [[494, 522]]}
+{"id": "e15", "chapter": 2, "question": "公司内部网址打不开，提示找不到域名或无法解析", "expect_ids": ["Q2-08"], "expect_lines": [[553, 582]]}
+{"id": "e16", "chapter": 2, "question": "办公室 Wi-Fi 连不上，或者连上了认证不通过", "expect_ids": ["Q2-10"], "expect_lines": [[616, 643]]}
+{"id": "e17", "chapter": 2, "question": "网络异常时要抓包、看路由，常用哪些诊断命令？", "expect_ids": ["Q2-12"], "expect_lines": [[670, 713]]}
+
+{"id": "e18", "chapter": 3, "question": "邮件一直发不出去，卡在发件箱里不动", "expect_ids": ["Q3-01"], "expect_lines": [[714, 747]]}
+{"id": "e19", "chapter": 3, "question": "Outlook 老是弹窗让我输入网络密码，怎么彻底解决？", "expect_ids": ["Q3-02"], "expect_lines": [[748, 778]]}
+{"id": "e20", "chapter": 3, "question": "邮件客户端报 0x8004010F 和 0x80040600，是什么意思？", "expect_ids": ["Q3-03"], "expect_lines": [[779, 813]]}
+{"id": "e21", "chapter": 3, "question": "邮箱提示容量满了，附件也发不出去", "expect_ids": ["Q3-04"], "expect_lines": [[814, 847]]}
+{"id": "e22", "chapter": 3, "question": "Outlook 右下角显示脱机工作，收发不了邮件", "expect_ids": ["Q3-05"], "expect_lines": [[848, 880]]}
+{"id": "e23", "chapter": 3, "question": "怀疑本地邮件缓存文件坏了，怎么判断和重建？", "expect_ids": ["Q3-06"], "expect_lines": [[881, 911]]}
+{"id": "e24", "chapter": 3, "question": "想装一个公司电脑里没预装的软件，怎么办？", "expect_ids": ["Q3-09"], "expect_lines": [[976, 1004]]}
+{"id": "e25", "chapter": 3, "question": "Office 提示未经授权产品，激活一直失败", "expect_ids": ["Q3-13"], "expect_lines": [[1109, 1163]]}
+
+{"id": "e26", "chapter": 4, "question": "怎么用 IP 地址把网络打印机添加到我电脑上？", "expect_ids": ["Q4-01"], "expect_lines": [[1164, 1192]]}
+{"id": "e27", "chapter": 4, "question": "添加打印机的时候搜不到设备，能不能按主机名加？", "expect_ids": ["Q4-02"], "expect_lines": [[1193, 1224]]}
+{"id": "e28", "chapter": 4, "question": "驱动有好几种，PCL6 和通用驱动该选哪个？", "expect_ids": ["Q4-03"], "expect_lines": [[1225, 1252]]}
+{"id": "e29", "chapter": 4, "question": "部门几十台电脑都要连着同一台机器，能不能批量部署？", "expect_ids": ["Q4-05"], "expect_lines": [[1287, 1315]]}
+{"id": "e30", "chapter": 4, "question": "打印任务卡住了，取消也取消不掉，队列清不空", "expect_ids": ["Q4-06"], "expect_lines": [[1316, 1345]]}
+{"id": "e31", "chapter": 4, "question": "打印机显示脱机或者已暂停，怎么恢复？", "expect_ids": ["Q4-07"], "expect_lines": [[1346, 1376]]}
+{"id": "e32", "chapter": 4, "question": "机器卡纸了，面板上还跳出错误代码", "expect_ids": ["Q4-08"], "expect_lines": [[1377, 1407]]}
+{"id": "e33", "chapter": 4, "question": "墨粉用完了，或者设备坏了要报修，找谁怎么报？", "expect_ids": ["Q4-12"], "expect_lines": [[1506, 1556]]}
+
+{"id": "e34", "chapter": 5, "question": "公司的密码规则是什么？要多少位、多久必须换一次？", "expect_ids": ["Q5-01"], "expect_lines": [[1557, 1583]]}
+{"id": "e35", "chapter": 5, "question": "密码忘了，能不能不打服务台自己重置？", "expect_ids": ["Q5-02"], "expect_lines": [[1584, 1611]]}
+{"id": "e36", "chapter": 5, "question": "自助重置走不通，找人工重置需要核验什么身份信息？", "expect_ids": ["Q5-03"], "expect_lines": [[1612, 1644]]}
+{"id": "e37", "chapter": 5, "question": "密码快过期了，或者已经过期进不去，怎么改？", "expect_ids": ["Q5-04"], "expect_lines": [[1645, 1674]]}
+{"id": "e38", "chapter": 5, "question": "改完密码之后，还有哪些设备要跟着更新一遍？", "expect_ids": ["Q5-05"], "expect_lines": [[1675, 1707]]}
+{"id": "e39", "chapter": 5, "question": "想设一个既好记又不会被策略拒绝的密码，有什么建议？", "expect_ids": ["Q5-09"], "expect_lines": [[1800, 1834]]}
+{"id": "e40", "chapter": 5, "question": "怀疑密码泄露了，或者手机丢了，第一时间该做什么？", "expect_ids": ["Q5-10"], "expect_lines": [[1835, 1869]]}

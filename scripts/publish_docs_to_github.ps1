@@ -216,7 +216,10 @@ foreach ($f in $files) {
     }
 }
 
-$dirs = @("src", "scripts", "tests", "docs", ".github")
+# 注意：data/ 必须一起同步！评测集 data/eval/qa.jsonl 是 tests/test_eval_metrics.py 的输入，
+# 漏掉它会让 CI 直接红（真实事故：2026-10 那次推送就因为这里没写 data/ 而 CI failure）。
+# data/ 下的向量库等文件本来就已入库，内容一致时不会产生 diff，重复复制是安全的。
+$dirs = @("src", "scripts", "tests", "docs", ".github", "data")
 foreach ($d in $dirs) {
     $srcDir = Join-Path $SourceDir $d
     if (-not (Test-Path -LiteralPath $srcDir)) { Warn "源目录没有 $d/，跳过"; continue }
