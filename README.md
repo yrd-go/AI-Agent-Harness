@@ -27,7 +27,7 @@
 - [部署](#部署)
 - [目录结构](#目录结构)
 - [安全约定](#安全约定)
-- [踩坑复盘（19 段）](docs/PITFALLS.md)
+- [踩坑复盘（20 段）](docs/PITFALLS.md)
 - [后续规划](#后续规划)
 
 ---
@@ -73,6 +73,8 @@ streamlit run streamlit_app.py
 python src/rag_demo.py "我的VPN坏了"                   # ① RAG：改写 + 混合检索 + 双引擎生成
 python src/rag_demo.py "我的VPN坏了" --no-rerank        #    对照组：纯向量检索
 python src/rag_demo.py --rebuild                       #    重建向量库（切换 Embedder 必须重建）
+python src/rag_demo.py "我的VPN坏了" --keyword-only      #    零依赖：只走本地关键词召回（连 API Key 都不需要）
+python src/rag_demo.py "我的VPN坏了" --no-vec-fallback   #    对照实验：禁用检索降级，失败即退出
 python src/multi_agent_demo.py                         # ② 多智能体：Agent Loop + 防死循环
 python src/core/router.py "帮我查学生2"                  # ③ 路由：本地脚本 / 免费翻译 / DeepSeek
 python src/mcp_demo/mcp_protocol_probe.py              # ④ MCP 探针：三步协议验证
@@ -173,13 +175,14 @@ graph LR
 | 全离线链路（本地检索 + 本地生成） | `--engine ollama --embedder ollama` | 47.8 s | 全程不出网 |
 | 本地向量库重建 | `--embedder ollama --rebuild` | 73.8 s（181 片段）/ 6.2 s（362 片段，智谱） | 与 Embedder 和片段数强相关 |
 | 本地向量检索 | 提问后的 Top-K 召回 | 0.06 s | 检索阶段本身很快，瓶颈在生成 |
+| **检索降级**（embedding 401 → 本地关键词召回） | 用一个无效 Key 强制鉴权失败 | **0.29 s** | 零外部依赖；Top-4 全部命中 VPN 相关条目（Q2-01/04/05/03） |
 | 本地模型内存峰值 | 加载 `qwen2.5:3b` 推理时 | **11.4 GB**（16GB 机器，可用 4.2GB） | CPU 占用仅 11%：**内存密集型**，非计算密集型 |
 
 **结论**：本地兜底是**可用性**方案而不是**性能**方案；把 3B 模型用作降级引擎的前提是机器有 12GB+ 可用内存。
 
 ---
 
-## 三个核心工程问题的处置
+## 四个核心工程问题的处置
 
 ### 1. 模型不可用 → 生成阶段主备降级 + 快速失败
 
@@ -209,6 +212,24 @@ python src/mcp_demo/mcp_protocol_probe.py --break-stdout  # 负向：稳定复�
 
 探针退出码：`0` 正常 · `1` 参数/路径错误 · `2` 缺 mcp SDK · `3` 环境限制 · `4` 协议层失败。
 
+### 4. 检索不可用 → 本地关键词召回兜底（零外部依赖）
+
+上面的降级只覆盖**生成**阶段；**检索**阶段依赖云端 Embedding 接口，它超时 / 限流 /
+Key 失效时整个问答会直接失败。现在会自动退化为**本地关键词召回**：
+用 `chromadb` 直接读出全量片段（**不需要 embedding**）+ 本地 IDF 打分（含 `tf` 与长度惩罚），
+并在输出里明确标注降级，绝不把关键词结果伪装成向量结果。
+
+```bash
+python src/rag_demo.py "我的VPN坏了"                    # 自动降级（默认开启）
+python src/rag_demo.py "我的VPN坏了" --no-vec-fallback   # 对照实验：禁用降级，失败即退出
+python src/rag_demo.py "我的VPN坏了" --keyword-only      # 零依赖：完全不碰向量库与 Embedding
+```
+
+实测（用无效 Key 强制 401）：降级后 **0.29 s** 返回，Top-4 全部命中 VPN 相关条目
+（Q2-01 客户端安装 / Q2-04 慢与掉线 / Q2-05 错误 691 / Q2-03 内网访问），全程无外部依赖。
+踩坑过程（降级一开始完全不生效、以及"所有片段分数都是 1.0"的排序退化）见
+[docs/PITFALLS.md 第 20 节](docs/PITFALLS.md)。
+
 ---
 
 ## 测试与自检
@@ -220,7 +241,7 @@ python scripts/import_check.py            # 跨目录 import + 路径常量自�
 python scripts/health_check.py            # 全量自检：目录/硬编码路径/导入/路径边界/启动烟雾
 ```
 
-测试覆盖（52 个用例）：
+测试覆盖（74 个用例）：
 
 | 文件 | 防的是什么回归 |
 |---|---|
@@ -229,6 +250,8 @@ python scripts/health_check.py            # 全量自检：目录/硬编码路�
 | `tests/test_rag_scoring.py` | 关键词权重、IDF 打分、双路召回去重合并、融合公式与排序 |
 | `tests/test_security_masking.py` | 凭据再次被打进公网页面（源码级断言） |
 | `tests/test_probe_contract.py` | 探针退化成只会走 happy path；污染开关默认被打开 |
+| `tests/test_import_safety.py` | 模块在导入期 `sys.exit`（曾把 import 自检带崩、导致 CI 红） |
+| `tests/test_retrieval_fallback.py` | 检索降级被绕过（`die()` 抛的 SystemExit 不是 Exception）；关键词打分退化成全部 1.0 |
 
 CI：`.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上跑单元测试 + 导入自检。
 
@@ -240,7 +263,7 @@ CI：`.github/workflows/ci.yml` 在 Python 3.10 / 3.12 上跑单元测试 + 导�
 
 诚实清单 —— 这些都是**尚未完成**的能力，不要按已完成理解：
 
-1. **检索侧没有降级**：降级只覆盖生成阶段。智谱 **Embedding** 接口不可用时，检索会直接失败退出（不会自动切本地向量）。这是当前最该补的缺口。
+1. **检索侧降级是「关键词兜底」，精度不如向量召回**：Embedding 接口不可用时会自动切到本地关键词召回（零外部依赖，401/超时都实测过），但它靠分词与 IDF，**召回质量弱于向量检索**；真正的「向量兜底」（本地 embedding 或缓存向量）尚未实现，且降级前后的量化对比还没有评测集支撑（见第 4 条）。
 2. **没有退避 / 抖动 / 熔断 / 时间预算**：实现的是一次主备切换 + 快速失败，不是完整的容错链路。
 3. **多智能体模块是确定性演示实现**：内置小知识库 + 规则评审，用来讲清 Agent Loop 的状态流转与止损；未接入真实向量库与 LLM 评审。
 4. **没有 RAG 量化评测**：hit@k / MRR / 答案命中率 / Token 成本尚未做成评测脚本；[实测数据](#实测数据含测量口径)是单次运行值而非评测集指标。
@@ -304,7 +327,7 @@ AI-Agent-Harness/
 │  ├─ chroma_db/               # 向量库（随仓库提交，云端冷启动无需重建）
 │  └─ test.db                  # 示例 SQLite（legacy JS 脚本使用）
 ├─ docs/
-│  ├─ PITFALLS.md              # ★ 19 段踩坑与排错复盘
+│  ├─ PITFALLS.md              # ★ 20 段踩坑与排错复盘
 │  └─ images/                  # ★ 44 张实测截图（01~44）
 ├─ tests/                      # 52 个纯标准库用例 + fixtures
 └─ scripts/                    # 自检、导入检查、legacy JS 脚本
@@ -330,7 +353,7 @@ AI-Agent-Harness/
 
 ---
 
-## 踩坑复盘（19 段）
+## 踩坑复盘（20 段）
 
 从沙箱拦截、模型代码幻觉、字符集编码冲突，到向量空间冲突、双引擎容灾演练、MCP 协议线污染，
 完整的过程记录与 44 张实测截图在 **[docs/PITFALLS.md](docs/PITFALLS.md)**。

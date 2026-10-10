@@ -3,7 +3,7 @@
 > 本文件记录 2026-10 的目录重构：Python 代码进 `src/`，数据进 `data/`，
 > JS 与运维脚本进 `scripts/`，所有路径改为**基于脚本自身位置动态计算**的绝对路径。
 > 项目介绍、架构与实测数据见根目录的 [README.md](README.md)（**已同步为重构后的命令**）；
-> 19 段踩坑与排错复盘见 [docs/PITFALLS.md](docs/PITFALLS.md)（44 张截图已归入 `docs/images/`）；
+> 20 段踩坑与排错复盘见 [docs/PITFALLS.md](docs/PITFALLS.md)（44 张截图已归入 `docs/images/`）；
 > 云端部署的详细排错清单（报错对照表）见 [DEPLOY.md](DEPLOY.md)。
 
 ---
@@ -45,9 +45,9 @@ my-agent/
 │  ├─ chroma_db/               # 向量库（当前为 zhipu 2048 维）
 │  └─ test.db                  # 示例 SQLite（Node.js 侧脚本使用）
 ├─ docs/
-│  ├─ PITFALLS.md              # ★ 19 段踩坑与排错复盘
+│  ├─ PITFALLS.md              # ★ 20 段踩坑与排错复盘
 │  └─ images/                  # ★ 44 张实测截图（01~44，编号与正文对应）
-├─ tests/                      # 纯标准库单元测试（52 用例）+ fixtures
+├─ tests/                      # 纯标准库单元测试（74 用例）+ fixtures
 │  ├─ run_all.py               # 不能用 python -m 的受限环境的测试入口
 │  └─ fixtures/                # find_project_root 的静态 marker 目录（零运行时写盘）
 ├─ scripts/

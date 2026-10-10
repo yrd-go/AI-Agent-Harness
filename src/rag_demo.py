@@ -187,6 +187,18 @@ class Hit:
     key: str = ""
 
 
+class RetrievalError(RuntimeError):
+    """向量召回失败（超时 / 鉴权 / 限流 / 维度不一致）。
+
+    为什么单独定义这个类型、为什么不在这里 die()：
+        die() 抛的是 SystemExit，而 SystemExit 继承 BaseException、**不是 Exception**，
+        上层 retrieve_with_fallback 的 except Exception 根本抓不到它 ——
+        结果「向量召回失败 -> 关键词兜底」这条降级链路会被直接绕过（实测踩过：
+        用一个无效 Key 触发 401，程序直接退出 1，兜底一次都没生效）。
+        所以这里只负责「如实抛错」，把「要不要致命」的决定权交给调用方。
+    """
+
+
 @dataclass
 class RewriteResult:
     """查询改写结果。ok=False 表示走了降级（沿用原始问题）。"""
@@ -757,22 +769,25 @@ def _hit_key(doc) -> str:
 
 
 def retrieve(db, question: str, k: int) -> list:
-    """纯向量检索（保持旧语义），返回 list[Hit]。--no-rerank 与候选召回都用它。"""
+    """纯向量检索（保持旧语义），返回 list[Hit]。--no-rerank 与候选召回都用它。
+
+    失败时抛 RetrievalError（**不再 die()**），让上层决定是否降级到本地关键词召回。
+    """
     try:
         raw_hits = db.similarity_search_with_score(question, k=k)
     except Exception as e:
         _msg = describe_exc(e)
         if "dimension" in _msg.lower():
-            die(
+            raise RetrievalError(
                 f"检索失败：{_msg}\n"
                 "       这是新旧向量维度不一致：向量库是用别的 embedding 模型建的。\n"
                 "       请执行：python rag_demo.py --embedder <你要用的> --rebuild"
-            )
-        die(
+            ) from e
+        raise RetrievalError(
             f"检索失败：{_msg}\n"
             "       若报鉴权/连接类错误，说明 Embedding 接口不可用；"
             "可改用 --embedder ollama 走本地向量化。"
-        )
+        ) from e
 
     hits: list = []
     for doc, score in raw_hits:
@@ -859,6 +874,219 @@ def score_keywords(pool: list, terms: list) -> None:
         hit.kw_score = (raw / peak) if peak > 0 else 0.0
 
 
+# ==========================================================================
+# 6.5) 检索侧降级：向量召回不可用 -> 本地关键词召回（零外部依赖）
+#
+# 背景（真实缺口）：
+#     生成阶段早就有主备降级（智谱 -> 本地 Ollama），但**检索阶段没有**。
+#     向量召回依赖云端 Embedding 接口：它超时 / 限流 / Key 失效时，整个问答会
+#     直接失败退出。这一节补上检索侧的兜底。
+#
+# 实现关键：走 chromadb 直接读片段，**不需要 embedding**（chromadb 本来就是本项目的
+#     直接依赖），因此降级路径零外部依赖、离线可用，连 ZHIPU_API_KEY 都不需要。
+# ==========================================================================
+class RawChunk:
+    """降级路径用的极简文档对象（只提供 page_content / metadata）。
+
+    刻意不依赖 langchain 的 Document：降级发生的场景之一就是「依赖/接口不可用」，
+    这种时候依赖越少越稳。
+    """
+
+    __slots__ = ("page_content", "metadata")
+
+    def __init__(self, page_content: str, metadata: dict | None = None) -> None:
+        self.page_content = page_content
+        self.metadata = metadata or {}
+
+
+def _as_line_no(value, default: int = -1) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _chunks_from_chroma_payload(payload: dict) -> list:
+    documents = payload.get("documents") or []
+    metadatas = payload.get("metadatas") or [None] * len(documents)
+    chunks = []
+    for content, meta in zip(documents, metadatas):
+        if content and str(content).strip():
+            chunks.append(RawChunk(str(content), dict(meta or {})))
+    return chunks
+
+
+def load_all_chunks(db=None) -> list:
+    """读出向量库里的全部片段（不需要 Embedding 接口）。
+
+    优先复用已打开的 langchain Chroma 客户端，避免同一进程对同一持久化目录重复开
+    客户端；拿不到时再用 chromadb 自己开一个（同样不需要 embedding）。
+    """
+    if db is not None:
+        try:
+            collection = getattr(db, "_collection", None)
+            if collection is not None:
+                chunks = _chunks_from_chroma_payload(
+                    collection.get(include=["documents", "metadatas"])
+                )
+                if chunks:
+                    return chunks
+        except Exception:  # noqa: BLE001  复用失败就换下面的自建客户端
+            pass
+
+    try:
+        import chromadb  # 本地向量库，requirements.txt 的直接依赖
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(f"缺少 chromadb，无法启用关键词兜底：{describe_exc(exc)}") from exc
+
+    client = chromadb.PersistentClient(path=fspath(CHROMA_DIR))
+    collection = client.get_collection(COLLECTION)
+    return _chunks_from_chroma_payload(
+        collection.get(include=["documents", "metadatas"])
+    )
+
+
+def rank_by_keywords(chunks: list, terms: list, k: int) -> tuple:
+    """按本地关键词打分排序，返回 (top_k, 全量候选池)。
+
+    打分口径（**与混合检索的 score_keywords 不同，这是刻意的**）：
+        贡献 = 词权重 × idf(t) × (1 + ln(tf))      tf = 该词在这个片段里出现几次
+        final = Σ贡献 / (1 + ln(1 + 片段长度 / 平均长度))   ← 长度惩罚
+
+    为什么不直接复用 score_keywords 的「候选池内归一化」：
+        降级时候选池是**全库**，很多片段都只命中同一个词一次，归一化后全部拿到 1.0，
+        排序退化成按行号 —— 看起来有分数，其实没有区分度。
+        这里补上 tf 与长度惩罚，让真正"更相关"的片段浮上来。
+
+    另外：降级路径没有向量参与，所以 vec_sim 恒为 0、final_score 直接等于关键词得分，
+    **不伪造**一个假的「向量相似度」。
+    """
+    pool = []
+    texts = []
+    for chunk in chunks:
+        meta = chunk.metadata
+        texts.append(chunk.page_content)
+        pool.append(
+            Hit(
+                doc=chunk,
+                line_start=_as_line_no(meta.get("line_start")),
+                line_end=_as_line_no(meta.get("line_end")),
+                vec_sim=0.0,
+                key=_hit_key(chunk),
+                sources=["关键词召回"],
+            )
+        )
+
+    n = len(pool)
+    avg_len = (sum(len(t) for t in texts) / n) if n else 1.0
+    lowered = [t.lower() for t in texts]
+
+    df = {}
+    for term, _weight in terms:
+        needle = term.lower()
+        df[term] = sum(1 for text in lowered if needle in text)
+    idf = {term: math.log(1.0 + n / (1.0 + df[term])) for term, _weight in terms}
+
+    raws = []
+    for hit, text in zip(pool, lowered):
+        total = 0.0
+        matched: list = []
+        contributions: list = []
+        for term, weight in terms:
+            tf = text.count(term.lower())
+            if tf <= 0:
+                continue
+            gain = weight * idf[term] * (1.0 + math.log(tf))
+            total += gain
+            matched.append(term)
+            contributions.append((term, weight, idf[term], gain))
+        length_penalty = 1.0 + math.log(1.0 + len(text) / avg_len)
+        hit.matched = matched
+        hit.contributions = contributions
+        raws.append(total / length_penalty)
+
+    peak = max(raws) if raws else 0.0
+    for hit, raw in zip(pool, raws):
+        hit.kw_score = (raw / peak) if peak > 0 else 0.0
+        hit.final_score = hit.kw_score
+    pool.sort(key=lambda h: (-h.kw_score, h.line_start))
+    return pool[:k], pool
+
+
+def retrieve_keyword_only(question: str, rewritten_query: str, terms: list, k: int,
+                          db=None) -> tuple:
+    """零外部依赖的关键词召回（向量检索不可用 / --keyword-only 时使用）。"""
+    chunks = load_all_chunks(db)
+    if not chunks:
+        return [], []
+    if not terms:
+        terms = build_terms(f"{rewritten_query or ''} {question or ''}".strip(), None)
+    return rank_by_keywords(chunks, terms, k)
+
+
+def retrieve_with_fallback(
+    db,
+    original_question: str,
+    rewritten_query: str,
+    terms: list,
+    k: int,
+    keyword_weight: float,
+    candidate_k: int,
+    allow_fallback: bool = True,
+) -> tuple:
+    """先走「向量 ∪ 关键词」混合检索；失败时（按配置）降级为本地关键词召回。
+
+    返回 (hits, pool, mode, note)：mode ∈ {"hybrid", "keyword-only"}，
+    note 是降级原因（未降级时为空串）。
+    """
+    try:
+        hits, pool = retrieve_hybrid(
+            db,
+            original_question=original_question,
+            rewritten_query=rewritten_query,
+            terms=terms,
+            k=k,
+            keyword_weight=keyword_weight,
+            candidate_k=candidate_k,
+        )
+        return hits, pool, "hybrid", ""
+    except (SystemExit, Exception) as exc:  # noqa: BLE001
+        # 同时接 SystemExit：die() 抛的是 SystemExit（BaseException 子类），
+        # 只写 except Exception 会漏掉它，降级就白写了（实测踩过这个坑）。
+        note = describe_exc(exc)
+        if not allow_fallback:
+            raise
+        warn(
+            f"向量召回不可用（{note}），已降级为本地关键词召回（零外部依赖）。\n"
+            "       本次只用本地分词 + IDF 打分排序，不使用向量相似度；\n"
+            "       如需强制失败以便做对照实验，请加 --no-vec-fallback。"
+        )
+        hits, pool = retrieve_keyword_only(
+            original_question, rewritten_query, terms, k, db=db
+        )
+        if not hits:
+            die(
+                "向量召回失败，关键词兜底也没有可用片段。\n"
+                f"       向量失败原因：{note}\n"
+                f"       兜底读不到片段：请确认 {CHROMA_DIR} 可读（或先 --rebuild 重建）。"
+            )
+        return hits, pool, "keyword-only", note
+
+
+def print_fallback_banner(note: str, mode: str) -> None:
+    """降级横幅：把「这次结果是怎么来的」讲清楚，别让人把关键词结果当成向量结果。"""
+    if mode != "keyword-only":
+        return
+    print(LINE)
+    print("========== 检索降级（Retrieval Fallback） ==========")
+    print(LINE)
+    print(f"[降级] 向量召回不可用：{note}")
+    print("[降级] 已切换为本地关键词召回：chromadb 直读全量片段 + 本地 IDF 打分，零外部依赖。")
+    print("[降级] 下方「向量」列恒为 0（本模式没有向量）、「融合」列等于「关键词」列，只看关键词列即可。")
+    print("降级标记: retrieval=keyword-only")
+    print()
+
+
 def retrieve_hybrid(
     db,
     original_question: str,
@@ -926,15 +1154,25 @@ def print_hybrid_trace(pool: list, k: int, keyword_weight: float, shown: int = 2
     print()
 
 
-def print_keyword_explanation(hits: list) -> None:
-    """关键词命中明细：把每个片段命中了哪些词、各自贡献多少分摊开，便于调 α。"""
+def print_keyword_explanation(hits: list, mode: str = "hybrid") -> None:
+    """关键词命中明细：把每个片段命中了哪些词、各自贡献多少分摊开，便于核对与调参。"""
     print(LINE)
     print("========== 关键词命中解释（IDF-lite 加权明细） ==========")
     print(LINE)
-    print(
-        "打分公式：贡献 = 词权重 × ln(1 + 候选池片段数 / (1 + 含该词片段数))；"
-        f"英文/数字权重 {WEIGHT_LATIN:.1f}，中文 bigram 权重 {WEIGHT_CJK:.1f}"
-    )
+    if mode == "keyword-only":
+        # 降级路径的公式与混合检索不同（多了 tf 与长度惩罚）。这里必须如实打印，
+        # 否则「输出里写的公式」与「实际算分」对不上 —— 那是最容易被追问穿的地方。
+        print(
+            "打分公式（降级路径）：贡献 = 词权重 × idf × (1 + ln(tf))，"
+            "总分 = Σ贡献 / (1 + ln(1 + 片段长度/平均长度))；"
+            "idf = ln(1 + 片段总数/(1 + 含该词片段数))，tf = 词在该片段内出现次数；"
+            f"英文/数字权重 {WEIGHT_LATIN:.1f}，中文 bigram 权重 {WEIGHT_CJK:.1f}"
+        )
+    else:
+        print(
+            "打分公式：贡献 = 词权重 × ln(1 + 候选池片段数 / (1 + 含该词片段数))；"
+            f"英文/数字权重 {WEIGHT_LATIN:.1f}，中文 bigram 权重 {WEIGHT_CJK:.1f}"
+        )
     if not hits:
         print("（无）")
         print()
@@ -1135,6 +1373,8 @@ def parse_args(argv=None):
             '  python rag_demo.py "我的VPN坏了" --keyword-weight 0.4  # 调关键词权重\n'
             '  python rag_demo.py "如何重置密码？" --engine zhipu\n'
             '  python rag_demo.py "如何重置密码？" --engine ollama --embedder ollama\n'
+            '  python rag_demo.py "我的VPN坏了" --keyword-only        # 零依赖：只用本地关键词召回\n'
+            '  python rag_demo.py "我的VPN坏了" --no-vec-fallback     # 对照实验：禁用检索降级\n'
             "  python rag_demo.py --rebuild\n"
         ),
     )
@@ -1196,6 +1436,16 @@ def parse_args(argv=None):
     )
     p.add_argument("--rebuild", action="store_true", help="强制重建向量库")
     p.add_argument("--no-fallback", action="store_true", help="禁用降级：主引擎失败即退出")
+    p.add_argument(
+        "--keyword-only",
+        action="store_true",
+        help="只用本地关键词召回：完全跳过向量库与 Embedding，零外部依赖、不需要任何 API Key",
+    )
+    p.add_argument(
+        "--no-vec-fallback",
+        action="store_true",
+        help="禁用「向量召回失败 -> 本地关键词召回」的自动降级（失败即退出，用于对照实验）",
+    )
     p.add_argument("--show-prompt", action="store_true", help="打印最终发给模型的完整 Prompt")
     return p.parse_args(argv)
 
@@ -1232,10 +1482,15 @@ def main(argv=None) -> int:
         if ZHIPU_API_KEY
         else "ZHIPU_API_KEY: 未配置"
     )
+    _retrieval_mode = (
+        "本地关键词（--keyword-only）" if args.keyword_only
+        else ("改写+混合重排" if args.rerank else "纯向量（--no-rerank）")
+    )
+    _fallback_state = "关闭（--no-vec-fallback）" if args.no_vec_fallback else "开启"
     print(
         f"[配置] {_env_src} | {_key_state} | "
         f"生成引擎: {args.engine} | 向量化: {args.embedder} | "
-        f"检索模式: {'改写+混合重排' if args.rerank else '纯向量（--no-rerank）'}"
+        f"检索模式: {_retrieval_mode} | 检索降级: {_fallback_state}"
     )
 
     # 提前做一次关键配置体检，给出比 traceback 更友好的提示
@@ -1247,15 +1502,22 @@ def main(argv=None) -> int:
             '       或临时执行：$env:ZHIPU_API_KEY = "sk-你的Key" 后重试。'
         )
 
-    try:
-        db = build_or_load_vectorstore(args.embedder, args.rebuild)
-    except SystemExit:
-        raise
-    except Exception as e:  # noqa: BLE001
-        die(f"初始化向量库时发生未预期错误：{describe_exc(e)}")
+    if args.keyword_only:
+        # 零依赖模式：不加载向量库、不构造 Embedding，连 Key 都不需要
+        info("--keyword-only：跳过向量库与 Embedding，仅使用本地关键词召回（零外部依赖）")
+        db = None
+    else:
+        try:
+            db = build_or_load_vectorstore(args.embedder, args.rebuild)
+        except SystemExit:
+            raise
+        except Exception as e:  # noqa: BLE001
+            die(f"初始化向量库时发生未预期错误：{describe_exc(e)}")
 
-    # 只重建索引、不提问
+    # 只重建索引、不提问（--keyword-only 下没有向量库可重建）
     if not args.question:
+        if db is None:
+            die("--keyword-only 模式下没有向量库可重建；请去掉该参数后再执行 --rebuild。")
         count, stored = _index_info(db)
         info(f"已就绪：{count} 个片段（embedder={stored or args.embedder}）。"
              "现在可以用 python rag_demo.py \"你的问题\" 提问。")
@@ -1269,7 +1531,15 @@ def main(argv=None) -> int:
 
     if args.rerank:
         # ---- ① 查询改写 ----
-        if args.rewrite:
+        if args.rewrite and args.keyword_only:
+            rr = RewriteResult(
+                query=question,
+                keywords=[],
+                source="--keyword-only",
+                ok=False,
+                note="--keyword-only 是零依赖模式，本次跳过 LLM 改写，改用本地分词",
+            )
+        elif args.rewrite:
             allow_ollama = args.engine in ("auto", "ollama")
             rr = rewrite_query(question, allow_ollama=allow_ollama)
             if not rr.ok:
@@ -1289,31 +1559,68 @@ def main(argv=None) -> int:
         terms = build_terms(rr.query or question, rr.keywords)
         print_rewrite_trace(question, rr, terms)
 
-        # ---- ② 向量 + 关键词 混合检索 ----
+        # ---- ② 向量 + 关键词 混合检索（含检索侧降级）----
         t0 = time.time()
-        hits, pool = retrieve_hybrid(
-            db,
-            original_question=question,
-            rewritten_query=rr.query or question,
-            terms=terms,
-            k=args.k,
-            keyword_weight=args.keyword_weight,
-            candidate_k=candidate_k,
-        )
+        if db is None:                      # --keyword-only：不碰向量库、不需要任何 Key
+            hits, pool = retrieve_keyword_only(
+                question, rr.query or question, terms, args.k
+            )
+            mode, note = "keyword-only", "--keyword-only：按你的要求跳过向量检索"
+            if not hits:
+                die(
+                    "关键词召回没有任何片段：请确认 data/chroma_db 可读"
+                    "（或去掉 --keyword-only 后执行 --rebuild 重建向量库）。"
+                )
+        else:
+            hits, pool, mode, note = retrieve_with_fallback(
+                db,
+                original_question=question,
+                rewritten_query=rr.query or question,
+                terms=terms,
+                k=args.k,
+                keyword_weight=args.keyword_weight,
+                candidate_k=candidate_k,
+                allow_fallback=not args.no_vec_fallback,
+            )
         print(
             f"[信息] 候选池 {len(pool)} 个片段（每路召回 top-{candidate_k}，已按内容去重合并），"
             f"重排后取 {len(hits)} 个，用时 {time.time() - t0:.2f}s\n"
         )
 
-        # ---- ③ 打印检索结果 ----
+        # ---- ③ 打印检索结果（降级时先打横幅，避免把关键词结果误读成向量结果）----
+        print_fallback_banner(note, mode)
         print_hybrid_trace(pool, args.k, args.keyword_weight)
-        print_keyword_explanation(hits)
+        print_keyword_explanation(hits, mode=mode)
         print_context(hits, hybrid=True)
     else:
-        # 升级前的行为：纯向量检索 + 旧输出格式
+        # 升级前的行为：纯向量检索 + 旧输出格式（同样带检索侧降级）
         t0 = time.time()
-        hits = retrieve(db, question, args.k)
+        note, mode = "", "vector"
+        if db is None:                      # --keyword-only
+            hits, _pool = retrieve_keyword_only(
+                question, question, build_terms(question, None), args.k
+            )
+            note = "--keyword-only：按你的要求跳过向量检索"
+            mode = "keyword-only"
+        else:
+            try:
+                hits = retrieve(db, question, args.k)
+            except (SystemExit, Exception) as exc:  # noqa: BLE001  含 SystemExit 兜底
+                if args.no_vec_fallback:
+                    raise
+                note = describe_exc(exc)
+                warn(f"向量召回不可用（{note}），已降级为本地关键词召回（零外部依赖）。")
+                hits, _pool = retrieve_keyword_only(
+                    question, question, build_terms(question, None), args.k, db=db
+                )
+                mode = "keyword-only"
+        if not hits:
+            die(
+                "检索没有拿到任何片段：请确认 data/chroma_db 可读"
+                "（或去掉 --keyword-only 后执行 --rebuild 重建向量库）。"
+            )
         print(f"[信息] 检索到 {len(hits)} 个片段，用时 {time.time() - t0:.2f}s\n")
+        print_fallback_banner(note, mode)
         print_context(hits, hybrid=False)
 
     # ---- ④ 生成（始终使用原始问题，避免改写后的检索词影响回答口径）----

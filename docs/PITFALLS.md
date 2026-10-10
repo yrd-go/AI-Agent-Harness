@@ -1,6 +1,6 @@
 # 实战踩坑与排错复盘（PITFALLS）
 
-> 本文是 AI-Agent-Harness 的**过程记录**：19 段真实踩坑、定位与修复。
+> 本文是 AI-Agent-Harness 的**过程记录**：20 段真实踩坑、定位与修复。
 > 项目定位、架构、快速开始与已知限制见根目录的 [README.md](../README.md)。
 > 截图统一放在 `docs/images/`（编号与正文一一对应）。
 
@@ -247,6 +247,44 @@
   ![MCP协议探针](images/43-web-console-mcp-probe.png?raw=true)
 * **⑤ Function Calling 演示**：提问「帮我查一下学号是 3 的学生叫什么名字？」，模型自动抽取 `{"student_id": 3}` 并发起原生工具调用，日志展示完整 ReAct 闭环。
   ![Function Calling 控制台演示](images/44-web-console-function-calling.png?raw=true)
+
+## 20. 检索侧降级：从「写了不生效」到「无效 Key 也能答」
+
+**背景**：生成阶段早有主备降级，但**检索**阶段没有 —— 云端 Embedding 接口一挂，问答直接失败。
+于是补了一条降级链路：向量召回失败 → `chromadb` 直读全量片段（不需要 embedding）
++ 本地 IDF 打分（零外部依赖）。
+
+补完后**第一次实测**（用一个无效 Key 强制 401 鉴权失败）：
+
+* **现象**：程序**直接退出码 1**，降级一次都没触发：
+
+  ```
+  [错误] 检索失败：AuthenticationError: Error code: 401 - 令牌已过期或验证不正确
+  ```
+
+* **定位**：报错来自 `retrieve()` 内部的 `die()`，而 `die()` 抛的是 **`SystemExit`**。
+  `SystemExit` 继承 `BaseException`、**不是 `Exception`**，所以降级函数里的
+  `except Exception` 根本抓不到它 —— 降级代码等于白写。
+* **解决**：
+  1. **根因**：`retrieve()` 不再 `die()`，改为抛自定义的 `RetrievalError`，
+     把「要不要致命」的决定权交给调用方；
+  2. **安全网**：降级函数同时 `except (SystemExit, Exception)`，
+     防止以后别的路径又用 `die()` 把它绕过；
+  3. **回归测试**：`tests/test_retrieval_fallback.py::TestRetrievalErrorContract`
+     把这两条契约钉住（"必须抛异常而不是退出" + "万一底层 SystemExit 也要兜住"）。
+* **附带发现的第二个问题**：降级能跑通后，Top-20 的「关键词得分」**全是 1.0000**。
+  原因是复用了混合检索的「候选池内归一化」，而降级时候选池是**全库**、
+  大量片段都只命中同一个词一次 —— 归一化后全部撞成 1.0，排序**退化成按行号**
+  （看起来有分数，其实没有区分度）。
+  解决：降级路径改用 `贡献 = 词权重 × idf × (1 + ln(tf))` + 长度惩罚，
+  并让**打印出来的公式随模式切换**（输出里的公式必须与实现一致，否则一问就穿）。
+* **修复后实测**（无效 Key → 401）：**0.29 s** 返回，Top-4 全部命中 VPN 相关条目
+  （Q2-01 客户端安装 / Q2-04 慢与掉线 / Q2-05 错误 691 / Q2-03 内网访问），全程零外部依赖。
+
+**反思**：`SystemExit` 与 `Exception` 的区别，这一轮踩了**两次**
+（另一次让 CI 变红：某个模块在导入期 `sys.exit`，把导入自检整个带崩）。
+结论很硬：**只要写了 `except Exception`，就要多问一句「这里会不会有人 raise SystemExit」** ——
+尤其在写兜底/降级逻辑时。**兜不住的兜底比没有兜底更危险**，因为它给你一种"已经兜住了"的错觉。
 
 ---
 
