@@ -235,7 +235,11 @@ class TestRetrievalErrorContract(unittest.TestCase):
 
 
 class TestKeywordExplanationFormula(unittest.TestCase):
-    """输出里写的公式必须与实际算分一致（降级路径的公式和混合检索不同）。"""
+    """输出里写的公式必须与实际算分一致。
+
+    历史：这里曾有两套公式（混合检索 `Σ权重×idf`、降级路径 `Σ权重×idf×(1+ln tf)` + 长度惩罚）；
+    现已统一为一套，因此两种模式都应打印同一条公式。
+    """
 
     def _hits(self):
         return [rag_demo.Hit(
@@ -244,19 +248,14 @@ class TestKeywordExplanationFormula(unittest.TestCase):
             contributions=[("vpn", 1.0, 1.38, 1.38)],
         )]
 
-    def test_keyword_only_prints_its_own_formula(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rag_demo.print_keyword_explanation(self._hits(), mode="keyword-only")
-        out = buf.getvalue()
-        self.assertIn("(1 + ln(tf))", out)
-        self.assertIn("长度", out)
-
-    def test_hybrid_keeps_old_formula(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rag_demo.print_keyword_explanation(self._hits(), mode="hybrid")
-        self.assertNotIn("(1 + ln(tf))", buf.getvalue())
+    def test_both_modes_print_the_unified_formula(self):
+        for mode in ("hybrid", "keyword-only"):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rag_demo.print_keyword_explanation(self._hits(), mode=mode)
+            out = buf.getvalue()
+            self.assertIn("(1 + ln(tf))", out, mode)
+            self.assertIn("长度", out, mode)
 
 
 class TestCliFlags(unittest.TestCase):

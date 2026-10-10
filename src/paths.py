@@ -159,28 +159,39 @@ def load_env() -> dict:
             env_file_used = None
 
     # ---- 2) Streamlit Secrets（云端推荐方式）----
-    secrets_used = False
+    # 注意：这里统计的是「Secrets 里能看见几个键」，而不是「我们写进去了几个」。
+    # 早期版本只在「键还不存在、由我们写入」时才记一笔，于是当平台已经把 Secrets
+    # 注入进程环境（键已存在 → 走"不覆盖"分支）时，页面会显示成"系统环境变量"，
+    # 让人误判成"没配 Key"。功能一直正常，是**标签误导**，所以改成如实汇报可见性。
+    secrets_seen: list[str] = []
+    secrets_written = 0
     try:
         import streamlit as st
 
         secrets = getattr(st, "secrets", None)
         if secrets:
             for key in list(secrets):
+                secrets_seen.append(str(key))
                 if not os.environ.get(key):          # 不覆盖已存在的环境变量
                     os.environ[key] = str(secrets[key])
-                    secrets_used = True
-            if secrets_used:
-                loaded.append("st.secrets")
+                    secrets_written += 1
     except Exception:
         # 没装 streamlit / 无 secrets.toml / 非 Streamlit 运行环境：都属正常
         pass
+
+    if secrets_seen:
+        if secrets_written:
+            loaded.append(f"st.secrets（{len(secrets_seen)} 个键，写入 {secrets_written} 个）")
+        else:
+            loaded.append(f"st.secrets（{len(secrets_seen)} 个键已存在于环境变量，未覆盖）")
 
     declared = _iter_declared_keys()
     configured = [k for k in declared if os.environ.get(k)]
     source = " + ".join(loaded) if loaded else "系统环境变量"
     return {
         "env_file": env_file_used,
-        "secrets_used": secrets_used,
+        "secrets_used": secrets_written > 0,
+        "secrets_seen": len(secrets_seen),
         "keys": len(configured),
         "source": source,
     }

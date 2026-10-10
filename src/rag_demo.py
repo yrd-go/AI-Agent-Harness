@@ -830,11 +830,18 @@ def merge_pools(pools: list) -> list:
 def score_keywords(pool: list, terms: list) -> None:
     """关键词 IDF-lite 打分，就地写入 hit.kw_score / matched / contributions。
 
-    idf(t)  = ln(1 + N / (1 + df(t)))     N=候选池片段数，df=含该词的片段数
-    raw(d)  = Σ_{t∈d} 权重(t) × idf(t)
-    kw(d)   = raw(d) / max(raw)           候选池内归一化到 0~1
-    说明：df 只在候选池内统计（不扫全库），纯 Python、零额外开销，
-          且天然抑制"排查""步骤"这类到处都是的高频词。
+    打分公式（**混合检索与关键词兜底共用这一份**，两条路径口径必须一致）：
+        idf(t)  = ln(1 + N / (1 + df(t)))       N=候选池片段数，df=含该词的片段数
+        gain(t) = 权重(t) × idf(t) × (1 + ln tf)  tf = 该词在片段内出现次数
+        raw(d)  = Σ gain(t)
+        kw(d)   = raw(d) / (1 + ln(1 + len(d) / 平均长度))     ← 长度惩罚
+        最后在候选池内归一化到 0~1。
+
+    为什么不用最朴素的 `raw = Σ 权重 × idf` + 池内归一化（血泪教训）：
+        候选池一大（降级时是全库 181 片段），大量片段都只命中同一个词一次，
+        归一化后**全部撞成 1.0**，排序退化成按行号 —— 看起来有分数，其实没有区分度。
+        补上 tf 与长度惩罚，分数才真正具备排序能力
+        （回归测试：tests/test_retrieval_fallback.py::test_scores_have_discrimination_not_all_ones）。
     """
     if not pool:
         return
@@ -853,6 +860,8 @@ def score_keywords(pool: list, terms: list) -> None:
         df[term] = sum(1 for text in texts if needle in text)
     idf = {term: math.log(1.0 + n / (1.0 + df[term])) for term, _w in terms}
 
+    avg_len = (sum(len(t) for t in texts) / n) if n else 1.0
+
     raws: list = []
     for hit, text in zip(pool, texts):
         total = 0.0
@@ -860,14 +869,19 @@ def score_keywords(pool: list, terms: list) -> None:
         contributions: list = []
         for term, weight in terms:
             needle = term.lower()
-            if needle and needle in text:
-                contribution = weight * idf[term]
-                total += contribution
-                matched.append(term)
-                contributions.append((term, weight, idf[term], contribution))
+            if not needle:
+                continue
+            tf = text.count(needle)
+            if tf <= 0:
+                continue
+            contribution = weight * idf[term] * (1.0 + math.log(tf))
+            total += contribution
+            matched.append(term)
+            contributions.append((term, weight, idf[term], contribution))
+        length_penalty = 1.0 + math.log(1.0 + len(text) / avg_len)
         hit.matched = matched
         hit.contributions = contributions
-        raws.append(total)
+        raws.append(total / length_penalty)
 
     peak = max(raws) if raws else 0.0
     for hit, raw in zip(pool, raws):
@@ -949,23 +963,16 @@ def load_all_chunks(db=None) -> list:
 def rank_by_keywords(chunks: list, terms: list, k: int) -> tuple:
     """按本地关键词打分排序，返回 (top_k, 全量候选池)。
 
-    打分口径（**与混合检索的 score_keywords 不同，这是刻意的**）：
-        贡献 = 词权重 × idf(t) × (1 + ln(tf))      tf = 该词在这个片段里出现几次
-        final = Σ贡献 / (1 + ln(1 + 片段长度 / 平均长度))   ← 长度惩罚
+    打分复用 score_keywords 的**同一套公式**（tf + 长度惩罚 + 池内归一化）：
+    线上混合检索与降级关键词召回这两条路径的口径必须一致，否则
+    「为什么降级后的排序和线上不一样」会变成没人说得清的事。
 
-    为什么不直接复用 score_keywords 的「候选池内归一化」：
-        降级时候选池是**全库**，很多片段都只命中同一个词一次，归一化后全部拿到 1.0，
-        排序退化成按行号 —— 看起来有分数，其实没有区分度。
-        这里补上 tf 与长度惩罚，让真正"更相关"的片段浮上来。
-
-    另外：降级路径没有向量参与，所以 vec_sim 恒为 0、final_score 直接等于关键词得分，
+    注意：降级路径没有向量参与，所以 vec_sim 恒为 0、final_score 直接等于关键词得分，
     **不伪造**一个假的「向量相似度」。
     """
     pool = []
-    texts = []
     for chunk in chunks:
         meta = chunk.metadata
-        texts.append(chunk.page_content)
         pool.append(
             Hit(
                 doc=chunk,
@@ -977,37 +984,8 @@ def rank_by_keywords(chunks: list, terms: list, k: int) -> tuple:
             )
         )
 
-    n = len(pool)
-    avg_len = (sum(len(t) for t in texts) / n) if n else 1.0
-    lowered = [t.lower() for t in texts]
-
-    df = {}
-    for term, _weight in terms:
-        needle = term.lower()
-        df[term] = sum(1 for text in lowered if needle in text)
-    idf = {term: math.log(1.0 + n / (1.0 + df[term])) for term, _weight in terms}
-
-    raws = []
-    for hit, text in zip(pool, lowered):
-        total = 0.0
-        matched: list = []
-        contributions: list = []
-        for term, weight in terms:
-            tf = text.count(term.lower())
-            if tf <= 0:
-                continue
-            gain = weight * idf[term] * (1.0 + math.log(tf))
-            total += gain
-            matched.append(term)
-            contributions.append((term, weight, idf[term], gain))
-        length_penalty = 1.0 + math.log(1.0 + len(text) / avg_len)
-        hit.matched = matched
-        hit.contributions = contributions
-        raws.append(total / length_penalty)
-
-    peak = max(raws) if raws else 0.0
-    for hit, raw in zip(pool, raws):
-        hit.kw_score = (raw / peak) if peak > 0 else 0.0
+    score_keywords(pool, terms)
+    for hit in pool:
         hit.final_score = hit.kw_score
     pool.sort(key=lambda h: (-h.kw_score, h.line_start))
     return pool[:k], pool
@@ -1119,6 +1097,19 @@ def retrieve_hybrid(
         pools.append(hits)
 
     pool = merge_pools(pools)
+
+    # ★ 关键修复：只有「原始问题」那一路算出来的相似度，才与用户真正问的话可比。
+    #   改写检索词只用于**扩展候选**（以及后面提供更好的关键词），
+    #   它召回的片段如果没被原问题召回，就把 vec_sim 归零 —— 不参与向量打分。
+    #
+    #   依据（40 题评测，reports/eval_baseline.json）：合并时"两路取最大相似度"
+    #   会把被改写词吸引、却与原问题无关的片段顶上来，默认链路 hit@1 只有 0.725，
+    #   反而低于纯向量检索的 0.925 —— 也就是说这个"优化"当时是负优化。
+    for hit in pool:
+        if not any("原问题" in (src or "") for src in (hit.sources or [])):
+            hit.vec_sim = 0.0
+            hit.sources = list(hit.sources or []) + ["仅改写扩展(不计向量分)"]
+
     score_keywords(pool, terms)
 
     for hit in pool:
@@ -1155,24 +1146,21 @@ def print_hybrid_trace(pool: list, k: int, keyword_weight: float, shown: int = 2
 
 
 def print_keyword_explanation(hits: list, mode: str = "hybrid") -> None:
-    """关键词命中明细：把每个片段命中了哪些词、各自贡献多少分摊开，便于核对与调参。"""
+    """关键词命中明细：把每个片段命中了哪些词、各自贡献多少分摊开，便于核对与调参。
+
+    注意：`mode` 现在**不再影响公式** —— 混合检索与降级关键词召回共用同一套打分
+    （tf + 长度惩罚）。保留这个参数只是兼容调用方；公式文本只有一份，
+    避免再出现"输出里写的公式和实际算分对不上"的情况。
+    """
     print(LINE)
     print("========== 关键词命中解释（IDF-lite 加权明细） ==========")
     print(LINE)
-    if mode == "keyword-only":
-        # 降级路径的公式与混合检索不同（多了 tf 与长度惩罚）。这里必须如实打印，
-        # 否则「输出里写的公式」与「实际算分」对不上 —— 那是最容易被追问穿的地方。
-        print(
-            "打分公式（降级路径）：贡献 = 词权重 × idf × (1 + ln(tf))，"
-            "总分 = Σ贡献 / (1 + ln(1 + 片段长度/平均长度))；"
-            "idf = ln(1 + 片段总数/(1 + 含该词片段数))，tf = 词在该片段内出现次数；"
-            f"英文/数字权重 {WEIGHT_LATIN:.1f}，中文 bigram 权重 {WEIGHT_CJK:.1f}"
-        )
-    else:
-        print(
-            "打分公式：贡献 = 词权重 × ln(1 + 候选池片段数 / (1 + 含该词片段数))；"
-            f"英文/数字权重 {WEIGHT_LATIN:.1f}，中文 bigram 权重 {WEIGHT_CJK:.1f}"
-        )
+    print(
+        "打分公式：贡献 = 词权重 × idf × (1 + ln(tf))，"
+        "总分 = Σ贡献 / (1 + ln(1 + 片段长度/平均长度))；"
+        "idf = ln(1 + 候选池片段数/(1 + 含该词片段数))，tf = 词在该片段内出现次数；"
+        f"英文/数字权重 {WEIGHT_LATIN:.1f}，中文 bigram 权重 {WEIGHT_CJK:.1f}"
+    )
     if not hits:
         print("（无）")
         print()
@@ -1221,22 +1209,73 @@ def print_context(hits: list, hybrid: bool = True) -> None:
     print()
 
 
-def build_prompt(hits: list, question: str) -> str:
-    blocks = []
-    for i, hit in enumerate(hits, 1):
-        blocks.append(
-            f"[片段 {i} | 第 {hit.line_start}-{hit.line_end} 行]\n{hit.doc.page_content.strip()}"
-        )
-    context = "\n\n".join(blocks) if blocks else "（无）"
+_ENTRY_ID_RE = re.compile(r"【(Q\d-\d\d)】")
 
-    return f"""你是企业内部 IT 服务台的助理。请严格依据下面的《知识库片段》回答用户问题。
 
-【回答规则】
+def entry_ids_of(text: str) -> list:
+    """抽出片段正文里包含的条目编号（如 Q4-08），按出现顺序去重。
+
+    为什么要它：片段是按字符数切分的，经常**从条目中间开始**，正文里未必带编号；
+    反过来一个片段也可能横跨两条。把编号显式告诉模型，它才能把"步骤 7/8/9"
+    落回到具体条目上，而不是因为不认识这段文字就拒答。
+    """
+    seen, out = set(), []
+    for m in _ENTRY_ID_RE.finditer(text or ""):
+        eid = m.group(1)
+        if eid not in seen:
+            seen.add(eid)
+            out.append(eid)
+    return out
+
+
+_PROMPT_RULES_LEGACY = """【回答规则】
 1. 只使用《知识库片段》中的信息，不得依赖片段之外的常识补充具体步骤。
 2. 若片段中没有答案，直接回答："知识库中未收录该信息，建议联系 IT 服务台（内线 8800）。"
 3. 用简体中文回答，结构清晰；涉及操作时按 1. 2. 3. 编号列出步骤。
 4. 引用到具体条目时，标注来源条目号，例如【Q5-02】。
-5. 不要编造命令、IP、邮箱、电话或流程细节。
+5. 不要编造命令、IP、邮箱、电话或流程细节。"""
+
+_PROMPT_RULES_CURRENT = """【回答规则】
+1. 只使用《知识库片段》中的信息，不得依赖片段之外的常识补充具体步骤。
+2. **片段里有多少就用多少**：只要片段包含与问题相关的条目、步骤或错误码说明，就先把这些
+   可自助的部分整理出来并标明条目号（例如【Q4-08】）；**不要因为片段不完整就整段拒答**。
+3. 只有在《知识库片段》与问题**完全无关**时，才回答：
+   "知识库中未收录该信息，建议联系 IT 服务台（内线 8800）。"
+4. 片段只覆盖流程的一部分时（例如只有错误码对照表、缺少前置条件），要明确指出
+   "片段未覆盖的部分需要联系服务台"，并说明缺的是哪一步 —— 而不是含糊带过。
+5. 用简体中文回答，结构清晰；涉及操作时按 1. 2. 3. 编号列出步骤。
+6. 引用到具体条目时，标注来源条目号，例如【Q5-02】。
+7. 不要编造命令、IP、邮箱、电话或流程细节。"""
+
+
+def prompt_variant() -> str:
+    """当前提示词变体：current（默认）或 legacy。
+
+    为什么要这个开关：
+        做提示词 A/B 必须能用**同一套评测集**跑出「改前 / 改后」。用环境变量切换
+        （而不是改代码再改回来）才能保证两次运行只差"提示词"这一个变量，
+        否则结论没法归因（这类混淆我在文档里批评过，自己不能再犯）。
+    """
+    value = os.environ.get("RAG_PROMPT_VARIANT", "").strip().lower()
+    return "legacy" if value == "legacy" else "current"
+
+
+def build_prompt(hits: list, question: str) -> str:
+    blocks = []
+    for i, hit in enumerate(hits, 1):
+        content = (hit.doc.page_content or "").strip()
+        ids = entry_ids_of(content)
+        header = f"[片段 {i} | 第 {hit.line_start}-{hit.line_end} 行"
+        if ids:
+            header += " | 条目 " + "、".join(f"【{eid}】" for eid in ids)
+        header += "]"
+        blocks.append(f"{header}\n{content}")
+    context = "\n\n".join(blocks) if blocks else "（无）"
+    rules = _PROMPT_RULES_LEGACY if prompt_variant() == "legacy" else _PROMPT_RULES_CURRENT
+
+    return f"""你是企业内部 IT 服务台的助理。请严格依据下面的《知识库片段》回答用户问题。
+
+{rules}
 
 【知识库片段】
 {context}

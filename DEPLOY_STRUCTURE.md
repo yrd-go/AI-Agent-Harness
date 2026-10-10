@@ -47,7 +47,7 @@ my-agent/
 ├─ docs/
 │  ├─ PITFALLS.md              # ★ 20 段踩坑与排错复盘
 │  └─ images/                  # ★ 44 张实测截图（01~44，编号与正文对应）
-├─ tests/                      # 纯标准库单元测试（74 用例）+ fixtures
+├─ tests/                      # 纯标准库单元测试（94 用例）+ fixtures
 │  ├─ run_all.py               # 不能用 python -m 的受限环境的测试入口
 │  └─ fixtures/                # find_project_root 的静态 marker 目录（零运行时写盘）
 ├─ scripts/

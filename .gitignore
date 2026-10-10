@@ -50,6 +50,9 @@ data/*.tmp
 # 若你更希望云端首次运行时自动重建向量库，取消下面这行的注释即可：
 # data/chroma_db/
 
+# ---- 评测报告（scripts/eval_rag.py 生成，属产物、不提交）----
+reports/
+
 # ---- 日志与临时文件 ----
 *.log
 logs/*
