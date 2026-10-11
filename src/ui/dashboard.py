@@ -334,12 +334,12 @@ def module_rag(python_bin: Path, timeout: int) -> None:
 
     r1, r2 = st.columns(2)
     rerank = r1.checkbox(
-        "开启查询改写 + 混合检索 `--rerank`（默认开）", value=True, key="rag_rerank",
+        "开启混合检索（向量 + 关键词） `--rerank`（默认开）", value=True, key="rag_rerank",
         help="取消勾选会加上 --no-rerank，退回纯向量检索，便于新旧对比",
     )
     rewrite = r2.checkbox(
-        "允许 LLM 查询改写 `--rewrite`", value=True, key="rag_rewrite",
-        help="需要 --rerank 生效；取消勾选会加上 --no-rewrite",
+        "允许 LLM 查询改写 `--rewrite`（默认关）", value=False, key="rag_rewrite",
+        help="默认关闭：40 题评测显示改写是负优化且慢 14 倍；勾选会显式加上 --rewrite",
     )
 
     r3, r4 = st.columns(2)
@@ -367,8 +367,9 @@ def module_rag(python_bin: Path, timeout: int) -> None:
             args: list = [text] if text else []
             if not rerank:
                 args.append("--no-rerank")
-            elif not rewrite:
-                args.append("--no-rewrite")
+            else:
+                # 显式二选一：不再依赖脚本默认值，避免"界面勾选状态"与"实际行为"不一致
+                args.append("--rewrite" if rewrite else "--no-rewrite")
             if rebuild:
                 args.append("--rebuild")
             if show_prompt:

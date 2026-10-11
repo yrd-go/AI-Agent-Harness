@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-**A runnable, high-availability RAG + MCP agent foundation** — with 44 measured screenshots and 20 post-mortems.
+**A runnable, high-availability RAG + MCP agent foundation** — with 44 measured screenshots and 21 post-mortems.
 
 [![CI](https://github.com/yrd-go/AI-Agent-Harness/actions/workflows/ci.yml/badge.svg)](https://github.com/yrd-go/AI-Agent-Harness/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -21,15 +21,15 @@ Live demo (Streamlit): <https://ai-agent-harness-edjmumadkd9e3lqsmtf3ff.streamli
 | | |
 |---|---|
 | **What it solves** | The four things that break LLM apps in production: model unavailability, vector-space mismatch, **protocol-line pollution**, **embedding endpoint unavailability** |
-| **Strongest evidence** | 74 automated tests + green CI; retrieval degrades and answers in **0.29 s** on a 401; MCP protocol failures are **reproducible with one command** |
+| **Strongest evidence** | 96 automated tests + green CI; retrieval degrades and answers in **0.29 s** on a 401; MCP protocol failures are **reproducible with one command** |
 | **Run it** | `pip install -r requirements.txt` → fill `.env` → `streamlit run streamlit_app.py`<br/>**No API key needed**: `python src/rag_demo.py "my VPN is broken" --keyword-only` |
-| **Go deeper** | [Architecture](#architecture) · [Measured data](#measured-data) · [Known limitations](#known-limitations) · [20 post-mortems](docs/PITFALLS.md) |
+| **Go deeper** | [Architecture](#architecture) · [Measured data](#measured-data) · [Known limitations](#known-limitations) · [21 post-mortems](docs/PITFALLS.md) |
 
 ### Key evidence (screenshots)
 
 | | |
 |---|---|
-| **Hybrid retrieval scoring**<br/>query rewrite + dual recall + IDF breakdown<br/>![Hybrid search](docs/images/35-rag-query-rewrite-hybrid-search.png?raw=true) | **Cloud API failure → automatic fallback**<br/>Zhipu times out, local Ollama answers (72 s)<br/>![Auto fallback](docs/images/19-rag-auto-fallback-success.png?raw=true) |
+| **Hybrid retrieval scoring**<br/>optional query rewrite + dual recall + IDF breakdown<br/>![Hybrid search](docs/images/35-rag-query-rewrite-hybrid-search.png?raw=true) | **Cloud API failure → automatic fallback**<br/>Zhipu times out, local Ollama answers (72 s)<br/>![Auto fallback](docs/images/19-rag-auto-fallback-success.png?raw=true) |
 | **MCP protocol debugging**<br/>`initialize / tools-list / tools-call` step by step<br/>![MCP probe](docs/images/32-mcp-probe-tools-call.png?raw=true) | **Multi-agent loop**<br/>conditional-edge retry + `give_up` guard<br/>![Multi-agent](docs/images/29-multi-agent-loop.png?raw=true) |
 
 ---
@@ -41,13 +41,14 @@ Live demo (Streamlit): <https://ai-agent-harness-edjmumadkd9e3lqsmtf3ff.streamli
 - [Architecture](#architecture)
 - [The five modules](#the-five-modules)
 - [Measured data](#measured-data)
+- [Evaluation (40 questions, reproducible)](#evaluation-40-questions-reproducible)
 - [Four core engineering problems](#four-core-engineering-problems)
 - [Tests and self-check](#tests-and-self-check)
 - [Known limitations](#known-limitations)
 - [Deployment](#deployment)
 - [Project layout](#project-layout)
 - [Security conventions](#security-conventions)
-- [Post-mortems (20)](docs/PITFALLS.md)
+- [Post-mortems (21)](docs/PITFALLS.md)
 - [Roadmap](#roadmap)
 
 ---
@@ -94,7 +95,7 @@ streamlit run streamlit_app.py
 **Command line only** (no Streamlit required):
 
 ```bash
-python src/rag_demo.py "my VPN is broken"                # ① RAG: rewrite + hybrid retrieval + dual-engine generation
+python src/rag_demo.py "my VPN is broken"                # ① RAG: vector+keyword hybrid retrieval + dual-engine generation
 python src/rag_demo.py "my VPN is broken" --no-rerank     #    baseline: pure vector retrieval
 python src/rag_demo.py --rebuild                         #    rebuild the vector store (required when switching embedder)
 python src/rag_demo.py "my VPN is broken" --keyword-only  #    zero-dependency: local keyword recall, no API key at all
@@ -118,9 +119,9 @@ python src/core/agent_tool_demo.py                       # ⑤ function calling:
 
 ```mermaid
 graph TD
-    Q[User question] --> RW{Query rewrite<br/>glm-4-flash}
-    RW -->|ok| HQ[rewritten query + keywords]
-    RW -->|failed / no key| OQ[original question + local tokenizer]
+    Q[User question] --> RW{Query rewrite<br/>optional: --rewrite}
+    RW -->|enabled and ok| HQ[rewritten query + keywords]
+    RW -->|off / failed / no key| OQ[original question + local tokenizer]
 
     HQ --> VS[(Chroma vector store)]
     OQ --> VS
@@ -179,7 +180,7 @@ graph LR
 
 | # | Module | Entry point | Requires | API key |
 |---|---|---|---|---|
-| ① | RAG QA (rewrite + hybrid retrieval + fallback) | `src/rag_demo.py` | vector store `data/chroma_db/` (committed) | yes (Zhipu) or fully offline (Ollama) |
+| ① | RAG knowledge-base QA (vector+keyword hybrid retrieval + fallback; optional `--rewrite`) | `src/rag_demo.py` | vector store `data/chroma_db/` (committed) | yes (Zhipu) or fully offline (Ollama) |
 | ② | Multi-agent collaboration + infinite-loop guard | `src/multi_agent_demo.py` | `langgraph` | no (deterministic demo) |
 | ③ | Multi-model routing | `src/core/router.py` | — | only the code-generation route (DeepSeek) |
 | ④ | MCP protocol probe (reproducible negative case) | `src/mcp_demo/mcp_protocol_probe.py` | `mcp>=2` | no |
@@ -210,6 +211,75 @@ numbers a lot.
 
 **Conclusion**: the local fallback is an **availability** measure, not a performance one. Running a 3B
 model as the degraded engine assumes 12 GB+ of free memory.
+
+---
+
+## Evaluation (40 questions, reproducible)
+
+**Why this section exists**: the table above is a **single-run** set of numbers, and it cannot answer
+"how do you know hybrid retrieval beats pure vector search?". So the project ships a reproducible
+benchmark: `data/eval/qa.jsonl` (40 questions covering all 5 chapters of the knowledge base — **every
+question is paraphrased into how an employee would actually phrase it, never reusing the entry title's
+own words**) plus `scripts/eval_rag.py`, where one command produces the comparison table. The judging
+rule is hard-coded in the script (a retrieved chunk contains the expected entry id, or its line range
+overlaps the expected entry range) and is pinned down by unit tests.
+
+```bash
+python scripts/eval_rag.py                 # retrieval comparison across the 4 configurations
+python scripts/eval_rag.py --with-answers  # add answer-level metrics (refusal rate / correct-entry citation)
+```
+
+### Retrieval metrics (40 questions, k=4, α=0.3)
+
+| Configuration | Initially | After the ranking fix | **Current (bug fixed)** | Avg. latency |
+|---|---|---|---|---|
+| **Default chain: vector + keyword hybrid (no LLM rewrite)** | 0.900 | 0.925 ※ | **0.975** | 0.26 s |
+| Vector-only (`--no-rerank`) | 0.925 | 0.925 | 0.925 (control, never changed) | 0.26 s |
+| LLM rewrite + hybrid rerank (`--rewrite`, optional) | 0.725 | 0.850 | 0.850 | 3.0 s |
+| Local keyword fallback (degraded path) | 0.900 | 0.900 | 0.900 | 0.02 s |
+
+> Numbers are hit@1; the current default chain scores hit@4 = 1.000 and MRR = 0.988.
+> ※ That 0.925 was an **illusion**: a bug had zeroed every vector score, so the chain had silently
+> degenerated into keyword-only ranking (see below).
+
+**What makes this section valuable is not the numbers — it is that they killed three "obvious" assumptions**:
+
+1. **"Query rewrite + hybrid rerank" was a negative optimization** (initially hit@1 0.725: 20 points
+   below plain vector search and 10× slower). Two root causes: ① when merging the two recall passes the
+   code kept the **max similarity across both queries**, so chunks pulled in by the rewritten wording —
+   yet unrelated to the original question — pushed the correct answer down; ② keyword scores were
+   normalized inside the candidate pool, where many chunks tie at `1.0`, so the α=0.3 half was mostly
+   noise. Fix: **the rewrite only expands the candidate set and no longer contributes to vector
+   scoring**; the keyword score gained `tf` and a length penalty, and hybrid retrieval and the fallback
+   path now share one formula. → hybrid rose to 0.850 while **the vector-only control did not move at
+   all** (so the change is attributable).
+2. **"The model loves refusing" does not hold**: see the answer-level metrics below.
+3. **While fixing this I introduced a bug myself**: "the rewrite only expands recall" was implemented as
+   "any chunk not recalled by the 'original question' pass gets its vector score zeroed", but when the
+   rewrite is off both passes are identical and the code still labelled the only pass as the "rewrite
+   query" — so **every chunk's vector score was zeroed and the default chain silently degenerated into
+   keyword ranking**. It was caught by reading the live trace, line after line of `向量 0.0000` (the
+   vector column reading zero) while **all 96 tests were green**; after the fix the default chain went
+   **0.925 → 0.975**, with a regression test added.
+
+**Decision**: the default chain is no longer "LLM rewrite + hybrid rerank" but **"vector + keyword
+hybrid, no LLM rewrite"**, with the rewrite demoted to the optional `--rewrite` switch. The table is the
+reason: the default configuration is now both the highest hit@1 (0.975) and the fastest (0.26 s).
+
+### Answer-level metrics (same questions, same retrieval chain, only the prompt switches)
+
+| Metric | Strict prompt | Improved prompt + entry ids in the Context |
+|---|---|---|
+| Refusal rate | 0 / 39 (0.0%) | 0 / 34 (0.0%) |
+| **False-refusal rate** (retrieval hit, model still answers "not covered") | 0.0% | 0.0% |
+| **Cites the correct entry** | 61.5% | **70.6%** |
+
+> Two honest notes: ① the initial "the model loves refusing" hypothesis was **disproved by measurement**
+> (0 refusals in both rounds) — what actually improved is whether an answer lands on the correct entry;
+> ② 5 questions in the second round are excluded because flaky networking broke retrieval, so the samples
+> are 39 vs 34 and this comparison is directional only.
+
+Reports (with per-question hit details) are written to `reports/eval_*.json` (that folder is gitignored).
 
 ---
 
@@ -276,7 +346,7 @@ python scripts/import_check.py            # cross-directory imports + path const
 python scripts/health_check.py            # full self-check: layout / hardcoded paths / imports / smoke
 ```
 
-Coverage (74 tests):
+Coverage (96 tests):
 
 | File | Regression it prevents |
 |---|---|
@@ -287,6 +357,7 @@ Coverage (74 tests):
 | `tests/test_probe_contract.py` | the probe degenerating into a happy-path-only script |
 | `tests/test_import_safety.py` | a module calling `sys.exit` at import time (this once broke the import self-check and CI) |
 | `tests/test_retrieval_fallback.py` | retrieval fallback being bypassed (`die()` raises `SystemExit`, not `Exception`); keyword scores collapsing to all-1.0 |
+| `tests/test_eval_metrics.py` | evaluation metrics and judging logic drifting (hit@1/hit@k/MRR math, entry-id/line-overlap judging, refusal detection); the `data/eval/` benchmark silently missing |
 
 CI: `.github/workflows/ci.yml` runs the unit tests and the import self-check on Python 3.10 and 3.12.
 
@@ -302,16 +373,19 @@ healthy**; any undeclared non-zero code = FAIL. Missing third-party dependencies
 An honest list — these are **not done yet**, do not read them as capabilities:
 
 1. **The retrieval fallback is keyword-level, not vector-level**: it works with zero external deps (401
-   and timeout both verified), but tokenization + IDF is weaker than vector recall. A true "vector
-   fallback" (local embeddings or cached vectors) is not implemented, and there is no quantitative
-   before/after comparison yet (see item 4).
+   and timeout both verified), but tokenization + IDF is measurably weaker than vector recall — from the
+   benchmark: keyword fallback hit@1 **0.900** vs the default chain **0.975** (see the
+   [Evaluation](#evaluation-40-questions-reproducible) section). A true "vector fallback"
+   (local embeddings or cached vectors) is not implemented.
 2. **No retry / jitter / circuit breaker / time budget**: what exists is one primary-to-backup switch
    plus fail-fast, not a complete resilience chain.
 3. **The multi-agent module is a deterministic demo**: an in-repo mini knowledge base plus rule-based
    review, used to explain state transitions and the give-up guard; it is not wired to a real vector
    store or an LLM reviewer.
-4. **No quantitative RAG evaluation**: `hit@k` / `MRR` / answer accuracy / token cost are not yet
-   scripted; the [measured data](#measured-data) are single-run numbers, not benchmark metrics.
+4. **The evaluation covers retrieval and "verifiability" only**: `hit@1 / hit@k / MRR` and "cites the
+   correct entry" are scripted and reproducible, but **answer correctness** (did the answer really solve
+   the user's problem?) still has no LLM judge or human labels, and **token cost** is not included; the
+   40 questions also come from a single knowledge base, so the conclusions should not be generalized.
 5. **End-to-end tests are environment-limited**: CI runs pure-stdlib unit tests and the import
    self-check; the MCP end-to-end cases are **explicitly SKIPPED** in sandboxes that forbid child
    process pipes.
@@ -369,7 +443,7 @@ AI-Agent-Harness/
 ├─ .github/workflows/ci.yml    # CI: unit tests + import self-check
 ├─ src/
 │  ├─ paths.py                 # ★ single source of truth for paths/env (incl. mask_uri / mask_secrets)
-│  ├─ rag_demo.py              # ① RAG: rewrite + hybrid retrieval + dual-engine fallback
+│  ├─ rag_demo.py              # ① RAG: vector+keyword hybrid retrieval + dual-engine fallback (optional --rewrite)
 │  ├─ multi_agent_demo.py      # ② multi-agent: LangGraph state graph + infinite-loop guard
 │  ├─ core/                    # ③ routing, ⑤ function calling, MongoDB tools
 │  ├─ mcp_demo/                # ④ MCP server / client / bypass probe
@@ -379,9 +453,10 @@ AI-Agent-Harness/
 │  ├─ chroma_db/               # committed vector store (no cold-start rebuild in the cloud)
 │  └─ test.db                  # sample SQLite (legacy JS scripts)
 ├─ docs/
-│  ├─ PITFALLS.md              # ★ 20 post-mortems
+│  ├─ PITFALLS.md              # ★ 21 post-mortems
 │  └─ images/                  # ★ 44 measured screenshots (01–44)
-├─ tests/                      # 74 pure-stdlib tests + fixtures
+├─ data/eval/                  # ★ 40-question benchmark (questions paraphrased; format in that folder's README)
+├─ tests/                      # 96 pure-stdlib tests + fixtures
 └─ scripts/                    # self-checks, import check, legacy JS scripts
 ```
 
@@ -406,7 +481,7 @@ AI-Agent-Harness/
 
 ---
 
-## Post-mortems (20)
+## Post-mortems (21)
 
 From sandbox restrictions and model code hallucination to charset conflicts, vector-space clashes,
 fallback drills and MCP protocol-wire pollution — the full write-up plus 44 screenshots is in
@@ -419,7 +494,11 @@ fallback drills and MCP protocol-wire pollution — the full write-up plus 44 sc
 - [ ] **Upgrade the retrieval fallback to vector level**: today it degrades to keyword recall (zero deps
       but weaker than vectors); next is local-embedding or cached-vector fallback
 - [ ] Complete the resilience chain: exponential backoff + jitter + circuit breaker + time budget + idempotent `request_id`
-- [ ] RAG evaluation set and metrics: `hit@k` / `MRR` / answer accuracy / token cost as a single-command report
+- [x] RAG evaluation set and metrics: `data/eval/qa.jsonl` (40 questions) + `scripts/eval_rag.py`
+      (`hit@1` / `hit@k` / `MRR` + refusal rate / correct-entry citation rate)
+- [x] **Default chain adjusted by the benchmark**: switched to "vector + keyword hybrid (no LLM rewrite)",
+      hit@1 **0.975** in 0.26 s; the LLM rewrite became the optional `--rewrite` switch
+- [ ] Answer-correctness evaluation: an LLM judge or human labels, folding "answer accuracy" and "token cost" into the same command
 - [ ] Wire the multi-agent module to a real vector store and an LLM reviewer (round-1 vs round-2 recall lift)
 - [ ] MCP probe: assert control frames (`initialized` / `ping` / `progress` / `cancellation`)
 - [ ] Optional full-dependency CI job (runs the MCP end-to-end negative case)

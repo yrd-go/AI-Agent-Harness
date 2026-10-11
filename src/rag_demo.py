@@ -1081,10 +1081,14 @@ def retrieve_hybrid(
     queries: list = []
     rewritten = (rewritten_query or "").strip()
     original = (original_question or "").strip()
-    if rewritten:
+    # 只有"改写词确实不同于原问题"时才走双路召回、才贴「改写检索词」标签。
+    # 否则（默认链路不做改写时）只发一路，且必须标成「原问题」——
+    # 真实事故：这里曾无条件先贴「改写检索词」，而下面的规则是"没被原问题召回的片段
+    # 就把 vec_sim 归零"，于是**所有**片段的向量分被清零，默认链路被悄悄退化成
+    # 纯关键词排序（回归测试：test_no_rewrite_keeps_vector_scores_alive）。
+    if rewritten and rewritten != original:
         queries.append((rewritten, "改写检索词"))
-    # 双路召回：改写可能丢信息，原始问法作为兜底并行召回，再按内容合并
-    if original and original != rewritten:
+    if original:
         queries.append((original, "原问题"))
     if not queries:  # 理论上不会发生，防御性兜底
         queries.append((original or rewritten, "原问题"))
@@ -1451,15 +1455,16 @@ def parse_args(argv=None):
         "--rewrite",
         dest="rewrite",
         action="store_true",
-        help="调用大模型做查询改写（默认开启，仅 --rerank 生效）",
+        help="调用大模型做查询改写（**默认关闭**：40 题评测显示它是负优化且慢 14 倍，"
+             "需要时显式打开；仅 --rerank 生效）",
     )
     p.add_argument(
         "--no-rewrite",
         dest="rewrite",
         action="store_false",
-        help="跳过 LLM 改写，直接用原始问题 + 本地分词做混合检索",
+        help="跳过 LLM 改写（默认行为；显式写出来让命令自解释、也便于脚本对照）",
     )
-    p.set_defaults(rewrite=True)
+    p.set_defaults(rewrite=False)
 
     p.add_argument(
         "--keyword-weight",
@@ -1523,7 +1528,10 @@ def main(argv=None) -> int:
     )
     _retrieval_mode = (
         "本地关键词（--keyword-only）" if args.keyword_only
-        else ("改写+混合重排" if args.rerank else "纯向量（--no-rerank）")
+        else (
+            "纯向量（--no-rerank）" if not args.rerank
+            else ("改写 + 混合重排（--rewrite）" if args.rewrite else "向量+关键词混合（默认，不做 LLM 改写）")
+        )
     )
     _fallback_state = "关闭（--no-vec-fallback）" if args.no_vec_fallback else "开启"
     print(
@@ -1590,9 +1598,9 @@ def main(argv=None) -> int:
             rr = RewriteResult(
                 query=question,
                 keywords=[],
-                source="--no-rewrite",
+                source="默认（未开启 --rewrite）",
                 ok=False,
-                note="已通过 --no-rewrite 关闭 LLM 改写，改用本地分词",
+                note="本次不做 LLM 改写（默认行为；需要改写请加 --rewrite），改用本地分词",
             )
 
         terms = build_terms(rr.query or question, rr.keywords)

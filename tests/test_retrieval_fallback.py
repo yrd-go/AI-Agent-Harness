@@ -234,6 +234,47 @@ class TestRetrievalErrorContract(unittest.TestCase):
         self.assertTrue(hits)
 
 
+class TestNoRewriteKeepsVectorScores(unittest.TestCase):
+    """回归保护：不做 LLM 改写时，向量分**绝不允许**被全部归零。
+
+    真实事故：`retrieve_hybrid` 曾无条件把第一路标成「改写检索词」，而打分规则是
+    "没被「原问题」这路召回的片段就把 vec_sim 归零" —— 于是默认链路（不做改写）
+    里所有片段的向量分被清零，**悄悄退化成纯关键词排序**；
+    当时 95 个测试没有一个报警，是实跑命令时看着 trace 里"向量 0.0000"才发现的。
+    """
+
+    def _fake_hits(self):
+        return [
+            rag_demo.Hit(
+                doc=chunk("打印机卡纸时先断电，再打开后盖取出纸张。", 70, 71),
+                line_start=70,
+                line_end=71,
+                vec_sim=0.87,
+                key="k1",
+                sources=["（由 retrieve_hybrid 覆盖）"],
+            )
+        ]
+
+    def test_single_route_is_labeled_as_original_question(self):
+        question = "打印机卡纸了怎么办"
+        terms = rag_demo.build_terms(question, None)
+        with mock.patch.object(rag_demo, "retrieve", return_value=self._fake_hits()):
+            _top, pool = rag_demo.retrieve_hybrid(
+                mock.MagicMock(),
+                original_question=question,
+                rewritten_query=question,      # 不做改写时，改写词就是原问题
+                terms=terms,
+                k=1,
+                keyword_weight=0.3,
+                candidate_k=20,
+            )
+        self.assertTrue(pool, "候选池不应为空")
+        for hit in pool:
+            self.assertIn("原问题", hit.sources)
+            self.assertGreater(hit.vec_sim, 0.0,
+                               "向量分被归零 = 默认链路退化成关键词排序")
+
+
 class TestKeywordExplanationFormula(unittest.TestCase):
     """输出里写的公式必须与实际算分一致。
 
@@ -268,6 +309,16 @@ class TestCliFlags(unittest.TestCase):
         args = rag_demo.parse_args(["问题"])
         self.assertFalse(args.keyword_only)
         self.assertFalse(args.no_vec_fallback)      # 默认开启降级
+
+    def test_default_chain_does_not_call_llm_rewrite(self):
+        """默认链路不做 LLM 改写 —— 依据 40 题评测（改写是负优化，且慢 14 倍）。
+
+        回归保护：这个默认值一度是 True。如果有人改回去，"默认链路"就会重新变成
+        hit@1 0.725 / 4.4s 的那一版，而且没有任何测试会报警 —— 所以必须钉住。
+        """
+        args = rag_demo.parse_args(["问题"])
+        self.assertTrue(args.rerank)      # 混合检索仍然默认开启
+        self.assertFalse(args.rewrite)    # 但不调用 LLM 改写
 
 
 if __name__ == "__main__":

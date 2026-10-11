@@ -67,8 +67,19 @@ class TestNegativeSwitchContract(unittest.TestCase):
     def test_server_has_opt_in_pollution_switch(self):
         source = _read(SERVER_PY)
         self.assertIn("MCP_POLLUTE_STDOUT", source)
-        self.assertIn("sys.stdout.write", source,
-                      "污染开关必须真的往 stdout 写东西，否则负向样例不成立")
+        # 必须直接写 fd 1：MCP SDK >= 2.2 启动时会抢占 fd 1（协议线换成私有副本）并把
+        # fd 1 指向 stderr，所以走 sys.stdout 根本碰不到协议线（本地实测：复现不出来）。
+        self.assertIn("os.write(1", source,
+                      "污染必须直接写 fd 1，否则在新版 SDK 上碰不到协议线")
+
+        # 污染行不能以换行结尾：否则会被"忽略不认识的行"的实现绕过去。
+        for line in source.splitlines():
+            if "[POLLUTED]" in line:
+                self.assertNotIn(r"\n", line,
+                                 "污染行不能以换行结尾，否则可能被 SDK 忽略、故障复现不出来")
+                break
+        else:
+            self.fail("没找到污染写入语句（负向样例被删了？）")
 
     def test_probe_passes_the_switch_to_the_child(self):
         source = _read(PROBE_PY)
@@ -111,9 +122,11 @@ class TestProbeEndToEnd(unittest.TestCase):
         combined = (proc.stdout or "") + (proc.stderr or "")
         if any(marker in combined for marker in SANDBOX_MARKERS):
             self.skipTest("受限沙箱禁止创建子进程管道")
-        self.assertEqual(proc.returncode, 4,
-                         f"负向模式应当以退出码 4 结束（协议层失败）：\n{combined[-3000:]}")
-        self.assertIn("负向模式命中", combined,
+        # 4 = 成功复现「协议层被污染」；5 = 未能复现（当前 SDK 已把 fd 1 指向 stderr，
+        # 见 mcp/server/stdio.py 的 issue #1933）。两者都是**明确结论**，不接受 0 或其它码。
+        self.assertIn(proc.returncode, (4, 5),
+                      f"负向模式必须以 4（复现）或 5（未能复现，环境已防护）结束：\n{combined[-3000:]}")
+        self.assertIn("负向模式", combined,
                       "负向模式必须打印定位结论，而不是只抛异常")
 
     def test_normal_mode_still_succeeds(self):

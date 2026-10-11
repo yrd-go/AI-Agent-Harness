@@ -30,6 +30,7 @@ mcp_weather_server.py 对话，把 MCP 的握手与工具调用原样打印出�
 
 退出码（便于脚本 / CI 断言）：
     0 = 三步全部成功，协议层正常
+    5 = 负向模式未能复现（当前 SDK 已自带防护：fd 1 被指向 stderr，见 mcp/server/stdio.py）
     1 = 参数或路径错误
     2 = 缺少 mcp SDK
     3 = 环境限制（例如受限沙箱禁止创建子进程管道）
@@ -371,6 +372,18 @@ def main(argv=None) -> int:
         return 4
 
     print(f"\n{LINE}")
+    if args.break_stdout:
+        # 负向模式本该在协议层炸掉；能走到这里说明**污染没能破坏协议线**。
+        # 不能谎报成功(0)，也不能谎报协议失败(4) —— 如实给出结论与退出码 5。
+        print("========== 负向模式结论 ==========")
+        print("[未复现] 本次污染（直接写 fd 1）没有破坏协议线：三步握手全部成功。")
+        print("         最可能的原因：当前 MCP SDK（>= 2.2）启动时会抢占 fd 1，把协议线换成")
+        print("         私有副本、并把 fd 1 指向 stderr（mcp/server/stdio.py，上游 issue #1933）")
+        print("         —— 从工具内部已无法再污染协议线，这个经典故障被上游从结构上防住了。")
+        print("         若环境里仍是旧版 SDK（< 2.2），同一条命令会以退出码 4 复现协议层失败。")
+        print("退出码约定: 5 = 负向模式未能复现（环境已自带防护，不代表代码有问题）")
+        print(LINE)
+        return 5
     print("完成：initialize / tools/list / tools/call 三步全部成功，协议层正常。")
     print("覆盖边界：本探针断言的是客户端三步主链路；官方文档里的 initialized 通知、")
     print("          ping、progress、cancellation 等控制帧没有逐一断言。")

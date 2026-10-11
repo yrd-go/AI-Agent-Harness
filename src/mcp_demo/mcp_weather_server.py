@@ -120,13 +120,20 @@ def get_current_weather(city: str) -> str:
 
     # ------------------------------------------------------------------
     # 负向样例（仅 MCP_POLLUTE_STDOUT=1 时触发）：
-    # 这一行是「经典错误示范」——stdio 传输下 stdout 是协议线，往这里写任何东西
-    # 都会把 JSON-RPC 报文搅乱，客户端随即解析失败或卡住。
-    # 探针的 --break-stdout 就是靠它把故障稳定复现出来，用来验证排障路径。
+    # 这是「经典错误示范」——stdio 传输下 stdout 是协议线，往里写任何东西都会把
+    # JSON-RPC 报文搅乱。探针的 --break-stdout 靠它复现故障、验证排障路径。
+    #
+    # ★ 必须直接写 **fd 1**，不能用 sys.stdout：
+    #   MCP SDK >= 2.2 在启动时会"抢占" fd 1（协议线改用私有副本），并把 fd 1
+    #   指向 stderr（见 mcp/server/stdio.py，上游 issue #1933）。因此在新版 SDK 上
+    #   怎么 print 都污染不到协议线 —— 这是好事，但也意味着**该故障在新版 SDK 上
+    #   已无法复现**（探针会如实以退出码 5 报告，而不是假装成功）。
+    #   写 fd 1 是"能做出的最强尝试"：旧版 SDK 上会真的弄坏协议线，新版上无害地落到 stderr。
+    # ★ 末尾**故意不写换行**：让垃圾与下一条 JSON 报文粘成同一行，
+    #   避免被"忽略不认识的行"的实现绕过去。
     # ------------------------------------------------------------------
     if _pollute_enabled():
-        sys.stdout.write("[POLLUTED] 这行本该走 stderr，现在被写进了协议线 stdout\n")
-        sys.stdout.flush()
+        os.write(1, "[POLLUTED] 这行本该走 stderr，现在被写进了协议线 stdout ".encode("utf-8"))
 
     return result
 

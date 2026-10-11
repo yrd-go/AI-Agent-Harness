@@ -85,7 +85,12 @@ python-dotenv
 # ---------------------------------------------------------------------------
 
 # MCP 协议官方 Python SDK + 命令行工具（Server / Client / 协议探针共用）
-mcp[cli]>=2
+# 锁 >=2.2 的原因（踩过的坑）：2.2 起 stdio 服务端会"抢占" fd 1 并把 fd 1 指向 stderr
+# （mcp/server/stdio.py，上游 issue #1933），从工具内部打印再也污染不到协议线。
+# 这直接改变了 src/mcp_demo 负向样例的行为：旧版 SDK 下能复现协议层失败（退出码 4），
+# 新版下复现不出来（探针如实返回退出码 5）。不锁版本会导致 CI 与本地装到不同 SDK、
+# 出现"CI 绿而本地红"的假绿 —— 所以这里显式锁定范围。
+mcp[cli]>=2.2,<3
 
 # LangChain 内置 MCP 适配层（MCPAdapter，需要 langchain>=1.4.0）
 langchain[mcp]>=1.4.0
